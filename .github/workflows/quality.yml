@@ -1,0 +1,36 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Complexity
+        run: >-
+          cargo clippy --locked --all-targets --all-features --
+          -A clippy::all -A clippy::pedantic -A clippy::nursery
+          -D clippy::cognitive_complexity -D clippy::too_many_lines
+          -D clippy::too_many_arguments -D clippy::type_complexity
+          -D clippy::struct_excessive_bools
+      - name: Tests
+        run: cargo test --locked --all-targets --all-features
