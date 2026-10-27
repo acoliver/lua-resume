@@ -9,6 +9,10 @@ repository = "https://github.com/acoliver/lua-resume"
 publish = false
 
 [dependencies]
+thiserror = "2.0.17"
+
+[dev-dependencies]
+mlua = { version = "=0.10.5", features = ["lua54", "vendored"] }
 
 [lints.rust]
 unsafe_code = "forbid"

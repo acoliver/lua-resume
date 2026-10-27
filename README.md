@@ -24,7 +24,10 @@ A save file contains only data and names. Code always comes from the game's own 
 
 ## Status
 
-Under construction. The parser and printer come first, then the rewrite, then the runtime. See the issues for progress.
+Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks the plan.
+
+- **Parser and printer: done.** `syntax::parse` reads Lua 5.4 source into a tree, and `syntax::print` writes a tree back as source that compiles to the same code. Each statement and function keeps its original line, so error messages and `debug.getinfo` report the original lines. The tests compile the original and the printed source with Lua 5.4 and compare the bytecode. Over all 3,387 Lua files that ship with Stranded: Alien Dawn's Mod Tools (927,000 lines), the bytecode is identical for every file. That corpus is not included here; run it with `LUA_RESUME_CORPUS=<dir> cargo test --release -- --ignored`.
+- The rewrite and the runtime are next.
 
 ## License
 
