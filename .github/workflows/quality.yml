@@ -24,13 +24,13 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Complexity
         run: >-
-          cargo clippy --locked --all-targets --all-features --
+          cargo clippy --locked --workspace --all-targets --all-features --
           -A clippy::all -A clippy::pedantic -A clippy::nursery
           -D clippy::cognitive_complexity -D clippy::too_many_lines
           -D clippy::too_many_arguments -D clippy::type_complexity
           -D clippy::struct_excessive_bools
       - name: Tests
-        run: cargo test --locked --all-targets --all-features
+        run: cargo test --locked --workspace --all-targets --all-features
