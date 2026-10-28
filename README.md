@@ -28,7 +28,8 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 
 - **Parser and printer: done.** `syntax::parse` reads Lua 5.4 source into a tree, and `syntax::print` writes a tree back as source that compiles to the same code. Each statement and function keeps its original line, so error messages and `debug.getinfo` report the original lines. The tests compile the original and the printed source with Lua 5.4 and compare the bytecode. Over all 3,387 Lua files that ship with Stranded: Alien Dawn's Mod Tools (927,000 lines), the bytecode is identical for every file. That corpus is not included here; run it with `LUA_RESUME_CORPUS=<dir> cargo test --release -- --ignored`.
 - **Normalization: done.** `rewrite::normalize(&Block, &Compiled)` stages explicit calls and their operands, preserves short-circuiting, rewrites loop conditions and generic iterators, and adds function-local call-site markers. Differential tests compare values, call traces, errors and coroutine yields on stock Lua 5.4. The original compiler's table-read decisions are required input, as described below.
-- Saving and restoring suspended frames, continuation generation and engine integration are next.
+- **Continuation generation: partly done.** `continuation::continuation_source` generates, from a normalized chunk, the function that finishes a frame from one call site (see below).
+- **Capture of suspended coroutines, value snapshots, frame rebuilding and engine integration: not started.** Capture needs the Lua `debug` library. mlua loads it only through `unsafe`, and this crate forbids unsafe code, so the runtime API will take the host's debug functions as an argument.
 
 ## Normalizing a chunk
 
@@ -66,6 +67,12 @@ The caller must supply a dump of exactly the same original chunk as the AST. Cou
 - Names beginning with `__lr` are reserved for generated locals. Normalization reports insufficient local capacity. Large expressions use private spill storage.
 - The pass exposes explicit calls. Implicit metamethod suspension, garbage-collector observations and debug-library observations of generated locals are outside its contract. Operand errors can name a generated temporary.
 - Corpus checks establish normal form and compilation. They do not execute the game's scripts or prove runtime equivalence over the corpus.
+
+## Continuations
+
+`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing `do`, `if` and `while` blocks (which covers generic `for` after normalization) and continues after the call statement of `site`. The call's results come from `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, and only functions defined by `function`, `local function`, or as the value of a `local` or assignment are found.
+
+Supported call statements are a plain call, `local names = call` and `names = call`. Refused with an error: sites inside `repeat`, numeric `for`, or a block with a label before the site, and other statement forms.
 
 ## License
 
