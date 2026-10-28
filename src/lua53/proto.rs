@@ -44,3 +44,24 @@ pub struct Proto<K, C> {
     pub line_info: Vec<u32>,
     pub locals: Vec<LocalVar>,
 }
+
+impl<K, C> Proto<K, C> {
+    /// The same prototype without constants and nested prototypes, which frame mapping does
+    /// not read.
+    pub fn erased(&self) -> Proto<(), ()> {
+        Proto {
+            source: self.source.clone(),
+            line_defined: self.line_defined,
+            last_line_defined: self.last_line_defined,
+            num_params: self.num_params,
+            is_vararg: self.is_vararg,
+            max_stack: self.max_stack,
+            code: self.code.clone(),
+            constants: Vec::new(),
+            children: Vec::new(),
+            upvalues: self.upvalues.clone(),
+            line_info: self.line_info.clone(),
+            locals: self.locals.clone(),
+        }
+    }
+}

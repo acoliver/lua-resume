@@ -12,3 +12,10 @@ Regeneration: build a minimal `luac` against the Lua 5.3.6 sources vendored in t
 `luaL_loadbufferx` and `lua_dump(L, writer, file, 0)`, then run
 
     luac53 @Lua/sample.lua sample.stripped.lua sample.luac
+
+`cases.lua` holds one small function per frame shape the import tests rebuild (nested call, numeric `for`,
+`ipairs` loop, vararg function, tail call, `pcall`, open upvalue, temporaries). It has no `assert` or `dbg`
+statements. `cases.luac` is its stock Lua 5.3.6 compile with chunk name `@Lua/cases.lua`, made with the same
+`luac53` driver:
+
+    luac53 @Lua/cases.lua cases.lua cases.luac

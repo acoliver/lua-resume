@@ -82,3 +82,50 @@ pub(super) fn find_site(block: &Block, site: u32) -> Option<Vec<Step>> {
     }
     None
 }
+
+/// The locals in scope at a call site, in declaration order, as the continuation of the site
+/// must declare them.
+pub(super) struct Scope {
+    pub(super) names: Vec<String>,
+    /// Whether the site statement is a `return`.
+    pub(super) in_return: bool,
+}
+
+pub(super) fn scope_at(body: &FuncBody, steps: &[Step]) -> Scope {
+    let mut names = body.params.clone();
+    let in_return = collect_scope(&body.body, steps, 0, &mut names);
+    Scope { names, in_return }
+}
+
+fn collect_scope(block: &Block, steps: &[Step], depth: usize, names: &mut Vec<String>) -> bool {
+    let step = steps[depth];
+    for stat in block.stats.iter().take(step.index) {
+        match &stat.kind {
+            StatKind::Local {
+                names: declared, ..
+            } => {
+                names.extend(declared.iter().map(|local| local.name.clone()));
+            }
+            StatKind::LocalFunction { name, .. } => names.push(name.clone()),
+            _ => {}
+        }
+    }
+    if depth + 1 == steps.len() {
+        return step.index == block.stats.len();
+    }
+    let Some(stat) = block.stats.get(step.index) else {
+        return false;
+    };
+    let inner = match &stat.kind {
+        StatKind::NumericFor { var, body, .. } => {
+            names.push(var.clone());
+            Some(body)
+        }
+        StatKind::If { arms, otherwise } => arms
+            .get(step.branch)
+            .map(|arm| &arm.body)
+            .or(otherwise.as_ref()),
+        _ => inner_blocks(stat).into_iter().next(),
+    };
+    inner.is_some_and(|inner| collect_scope(inner, steps, depth + 1, names))
+}
