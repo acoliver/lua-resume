@@ -45,4 +45,10 @@ pub enum PermanentError {
     DuplicateName(String),
     #[error("the value is already named `{0}`")]
     AlreadyNamed(String),
+    #[error("no permanent is named `{0}`")]
+    UnknownName(String),
+    #[error("the light userdata handle {0} is already used")]
+    DuplicateHandle(u64),
+    #[error("the light userdata already has the handle {0}")]
+    AlreadyHandled(u64),
 }

@@ -21,10 +21,12 @@
 //! Frames are refused with their number: temporaries in registers below the callee, a
 //! prototype or chunk the host does not know, a call that is a different kind in the save and
 //! the source, a native frame in the middle that is not a protected call, and permanents the
-//! 5.4 host did not register. An open upvalue gives its cell the value of the stack slot it
-//! points at; the frame's local keeps its own copy, so writes made after the restore through
-//! the closure and through the local no longer reach each other. The frames affected are
-//! listed in [`Imported::aliased`].
+//! 5.4 host did not register.
+//!
+//! An open upvalue points at a stack slot, which is a local of its frame. The cell takes the
+//! value of the slot and the frame lists the local as shared with that cell, as a capture of
+//! a 5.4 frame does, so a restore joins the closures to the local and writes made through
+//! either reach the other.
 
 mod error;
 mod frames;
@@ -38,16 +40,26 @@ pub use model::{
 };
 
 use crate::capture::{
-    Callee, ClosureData, FunctionId, Permanents, Snapshot, ThreadData, UpvalueRef, Value,
+    Callee, ClosureData, FunctionId, Permanents, SharedLocal, Snapshot, ThreadData, UpvalueRef,
+    Value,
 };
 use crate::lua53::Proto;
 
-/// The snapshot, and the locals that stay copies of an open upvalue's cell.
+/// The result of an import.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Imported {
     pub snapshot: Snapshot,
-    /// `(frame, local name)` of each local an open upvalue points at.
-    pub aliased: Vec<(usize, String)>,
+}
+
+/// An open upvalue seen from the frame whose local it is.
+struct OpenLocal {
+    /// The index of the frame in the snapshot's frames.
+    frame: usize,
+    name: String,
+    /// How many live locals of the same name are declared before it in the frame.
+    occurrence: usize,
+    /// The cell of the upvalue.
+    cell: usize,
 }
 
 /// The labels of the native functions that call their argument in protected mode and resume
@@ -91,11 +103,12 @@ pub fn import_thread(
         captured: vec![0],
     };
     snapshot.threads.extend(heap.threads.iter().cloned());
-    let aliased = importer.open_upvalues(&thread, &mut snapshot)?;
-    let frames = importer.thread_frames(&thread)?;
+    let open = importer.open_upvalues(&thread, &mut snapshot)?;
+    let mut frames = importer.thread_frames(&thread)?;
+    share_open_locals(&mut frames, &open)?;
     check_permanents(&frames, &snapshot, known)?;
     snapshot.threads[0] = ThreadData::Suspended { frames };
-    Ok(Imported { snapshot, aliased })
+    Ok(Imported { snapshot })
 }
 
 fn rename_value(value: &mut Value, names: &PermanentMap) {
@@ -119,6 +132,35 @@ fn rename_permanents(thread: &mut SavedThread, heap: &mut SavedHeap, names: &Per
     }
 }
 
+/// Lists in each frame the locals that open upvalues point at.
+fn share_open_locals(
+    frames: &mut [crate::capture::Frame],
+    open: &[OpenLocal],
+) -> Result<(), ImportError> {
+    for found in open {
+        let path = format!("open upvalue of local `{}`", found.name);
+        let frame = frames
+            .get_mut(found.frame)
+            .ok_or_else(|| ImportError::malformed(&path, "the frame is not in the snapshot"))?;
+        let local = frame
+            .locals
+            .iter()
+            .enumerate()
+            .filter(|(_, local)| local.name == found.name)
+            .nth(found.occurrence)
+            .map(|(index, _)| index)
+            .ok_or_else(|| ImportError::malformed(&path, "the frame does not declare the local"))?;
+        let shared = SharedLocal {
+            local,
+            cell: found.cell,
+        };
+        if !frame.shared.contains(&shared) {
+            frame.shared.push(shared);
+        }
+    }
+    Ok(())
+}
+
 fn check_permanents(
     frames: &[crate::capture::Frame],
     snapshot: &Snapshot,
@@ -129,6 +171,12 @@ fn check_permanents(
             path,
             name: name.clone(),
         }),
+        Value::LightUserData(handle) if known.light(*handle).is_none() => {
+            Err(ImportError::MissingPermanent {
+                path,
+                name: format!("light userdata {handle}"),
+            })
+        }
         _ => Ok(()),
     };
     for (at, frame) in frames.iter().enumerate() {
@@ -202,14 +250,14 @@ impl Importer<'_> {
         Ok(out)
     }
 
-    /// Gives each open upvalue's cell the value of its stack slot and lists the frame locals
-    /// those slots are.
+    /// Gives each open upvalue's cell the value of its stack slot and finds the frame local
+    /// the slot is.
     fn open_upvalues(
         &self,
         thread: &SavedThread,
         snapshot: &mut Snapshot,
-    ) -> Result<Vec<(usize, String)>, ImportError> {
-        let mut aliased = Vec::new();
+    ) -> Result<Vec<OpenLocal>, ImportError> {
+        let mut open = Vec::new();
         for &(slot, cell) in &thread.open_upvalues {
             let path = format!("open upvalue at stack index {slot}");
             let value = thread
@@ -221,15 +269,16 @@ impl Importer<'_> {
                 .get_mut(cell)
                 .ok_or_else(|| ImportError::malformed(&path, format!("no cell {cell}")))?
                 .value = value.clone();
-            if let Some(found) = self.frame_local(thread, slot) {
-                aliased.push(found);
-            }
+            let found = self.frame_local(thread, slot, cell).ok_or_else(|| {
+                ImportError::malformed(&path, "the slot is not a live local of a Lua frame")
+            })?;
+            open.push(found);
         }
-        Ok(aliased)
+        Ok(open)
     }
 
-    /// The frame and local name register `slot` is in, when a Lua frame has it live.
-    fn frame_local(&self, thread: &SavedThread, slot: usize) -> Option<(usize, String)> {
+    /// The local register `slot` is in a Lua frame that has it live.
+    fn frame_local(&self, thread: &SavedThread, slot: usize, cell: usize) -> Option<OpenLocal> {
         let (at, frame) = thread
             .frames
             .iter()
@@ -242,12 +291,31 @@ impl Importer<'_> {
         let proto = self.protos.get(self.saved_closures.get(*closure)?.proto)?;
         let register = slot - frame.base;
         let pc = frame.saved_pc.checked_sub(1)?;
-        let name = proto
+        let live: Vec<&[u8]> = proto
             .locals
             .iter()
             .filter(|local| (local.start_pc as usize) <= pc && pc < local.end_pc as usize)
-            .nth(register)?;
-        Some((at, String::from_utf8_lossy(&name.name).into_owned()))
+            .map(|local| local.name.as_slice())
+            .collect();
+        let name = *live.get(register)?;
+        // Hidden loop registers are named with a parenthesis; no closure can capture them.
+        if name.starts_with(b"(") {
+            return None;
+        }
+        let occurrence = live[..register]
+            .iter()
+            .filter(|other| **other == name)
+            .count();
+        let lua_frames = thread.frames[..at]
+            .iter()
+            .filter(|earlier| earlier.call_status & status::LUA != 0)
+            .count();
+        Some(OpenLocal {
+            frame: lua_frames,
+            name: String::from_utf8_lossy(name).into_owned(),
+            occurrence,
+            cell,
+        })
     }
 
     /// The snapshot frames of every Lua frame, with what each is waiting in.
