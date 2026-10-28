@@ -4,4 +4,6 @@
 //! coroutine can stop at visible in the source, saves read frames through Lua's debug library,
 //! and restores generate continuation functions from the game's own source.
 
+pub mod compiled;
+pub mod rewrite;
 pub mod syntax;
