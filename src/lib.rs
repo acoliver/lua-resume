@@ -5,5 +5,6 @@
 //! and restores generate continuation functions from the game's own source.
 
 pub mod compiled;
+pub mod continuation;
 pub mod rewrite;
 pub mod syntax;
