@@ -1,0 +1,254 @@
+//! Reading the frames of one suspended coroutine.
+
+use mlua::{Thread, ThreadStatus};
+
+use super::debug::Info;
+use super::path::Path;
+use super::{Callee, CaptureError, Capturer, Frame, FunctionId, Local, Shape, ThreadData, Value};
+
+const SITE: &str = crate::rewrite::SITE;
+
+impl Capturer<'_> {
+    /// The state of `thread`: its frames when suspended, `Dead` when finished.
+    pub(super) fn thread_data(
+        &mut self,
+        thread: &Thread,
+        path: &Path,
+        root: bool,
+    ) -> Result<ThreadData, CaptureError> {
+        let state = match thread.status() {
+            ThreadStatus::Resumable => return self.frames(thread, path).map(wrap),
+            ThreadStatus::Running => "running",
+            ThreadStatus::Finished | ThreadStatus::Error if !root => return Ok(ThreadData::Dead),
+            ThreadStatus::Finished => "finished",
+            ThreadStatus::Error => "ended by an error",
+        };
+        Err(CaptureError::NotSuspended {
+            path: path.render(),
+            state,
+        })
+    }
+
+    /// Frames from the outermost call to the innermost Lua call.
+    fn frames(&mut self, thread: &Thread, path: &Path) -> Result<Vec<Frame>, CaptureError> {
+        let Some(top) = self.debug.level(thread, 0)? else {
+            return Err(CaptureError::NotStarted {
+                path: path.render(),
+            });
+        };
+        let mut callee = self.top_callee(&top, path)?;
+        let mut hidden = 0;
+        let mut frames = Vec::new();
+        let mut level = 1;
+        while let Some(info) = self.debug.level(thread, level)? {
+            let here = path.child(format!("level {level}"));
+            if info.what == "C" {
+                return Err(CaptureError::NativeFrame {
+                    path: here.render(),
+                    name: info.name.unwrap_or_else(|| "?".to_owned()),
+                });
+            }
+            let frame = self.frame(thread, level, &info, (callee, hidden), &here)?;
+            callee = Callee::Lua(frame.function.clone());
+            hidden = hidden_slots(&info, &frame);
+            frames.push(frame);
+            level += 1;
+        }
+        frames.reverse();
+        Ok(frames)
+    }
+
+    /// The yielding function at the top of the stack, by name.
+    fn top_callee(&self, top: &Info, path: &Path) -> Result<Callee, CaptureError> {
+        let value = mlua::Value::Function(top.func.clone());
+        let name = self
+            .permanents
+            .name_of(&value)
+            .map(str::to_owned)
+            .or_else(|| {
+                (top.func.to_pointer().addr() == self.yield_function)
+                    .then(|| "coroutine.yield".to_owned())
+            });
+        match name {
+            Some(name) if top.what == "C" => Ok(Callee::Native(name)),
+            _ => Err(CaptureError::NotYielding {
+                path: path.render(),
+                found: describe(top),
+            }),
+        }
+    }
+
+    fn frame(
+        &mut self,
+        thread: &Thread,
+        level: i64,
+        info: &Info,
+        (pending, hidden): (Callee, usize),
+        path: &Path,
+    ) -> Result<Frame, CaptureError> {
+        let function = self.identify(info, path)?;
+        let closure = self.closure(&info.func, path)?;
+        let locals = self.locals(thread, level, hidden, path)?;
+        let site = site_of(&locals).ok_or_else(|| CaptureError::NotNormalized {
+            path: path.render(),
+        })?;
+        let varargs = if info.vararg {
+            self.varargs(thread, level, path)?
+        } else {
+            Vec::new()
+        };
+        Ok(Frame {
+            function,
+            closure,
+            site,
+            line: info.current_line,
+            tail_call: info.tail_call,
+            locals,
+            varargs,
+            pending,
+        })
+    }
+
+    /// The identity of a Lua function, checking that no different function shares it.
+    pub(super) fn identify(
+        &mut self,
+        info: &Info,
+        path: &Path,
+    ) -> Result<FunctionId, CaptureError> {
+        let unidentifiable = || CaptureError::Unidentifiable {
+            path: path.render(),
+        };
+        let line = u32::try_from(info.line).map_err(|_| unidentifiable())?;
+        let end_line = u32::try_from(info.end_line).map_err(|_| unidentifiable())?;
+        if info.source == "=?" {
+            return Err(unidentifiable());
+        }
+        let id = FunctionId {
+            chunk: info.source.clone(),
+            line,
+            end_line,
+        };
+        let shape = Shape {
+            params: info.params,
+            vararg: info.vararg,
+            upvalues: info.upvalues,
+            active_lines: info.active_lines.clone(),
+        };
+        match self.shapes.get(&id) {
+            Some(known) if *known != shape => Err(CaptureError::Ambiguous {
+                function: format!("{}:{line}-{end_line}", id.chunk),
+            }),
+            Some(_) => Ok(id),
+            None => {
+                self.shapes.insert(id.clone(), shape);
+                Ok(id)
+            }
+        }
+    }
+
+    /// The named locals of a frame. `hidden` is the number of dead `(temporary)` slots the
+    /// frame's vararg callee leaves above its locals; other unnamed slots are refused.
+    fn locals(
+        &mut self,
+        thread: &Thread,
+        level: i64,
+        hidden: usize,
+        path: &Path,
+    ) -> Result<Vec<Local>, CaptureError> {
+        let mut locals = Vec::new();
+        let mut skipped = 0;
+        let mut index = 0;
+        while let Some((name, value)) = self.debug.local(thread, level, index + 1)? {
+            index += 1;
+            if name == "(temporary)" && skipped < hidden {
+                skipped += 1;
+                continue;
+            }
+            let here = path.child(format!("local `{name}`"));
+            if name.starts_with('(') || skipped > 0 {
+                return Err(CaptureError::Unnamed {
+                    path: here.render(),
+                    name,
+                });
+            }
+            self.refuse_to_be_closed(&value, &here)?;
+            let value = self.value(&value, &here)?;
+            locals.push(Local { name, value });
+        }
+        if skipped != hidden {
+            return Err(CaptureError::Unnamed {
+                path: path.render(),
+                name: "(temporary)".to_owned(),
+            });
+        }
+        Ok(locals)
+    }
+
+    fn varargs(
+        &mut self,
+        thread: &Thread,
+        level: i64,
+        path: &Path,
+    ) -> Result<Vec<Value>, CaptureError> {
+        let mut varargs = Vec::new();
+        let mut index = 1;
+        while let Some((_, value)) = self.debug.local(thread, level, -index)? {
+            let here = path.child(format!("vararg {index}"));
+            varargs.push(self.value(&value, &here)?);
+            index += 1;
+        }
+        Ok(varargs)
+    }
+
+    /// Lua keeps no record of `<close>` that the debug library can read. A to-be-closed
+    /// variable holds nil, false or a value with a `__close` metamethod, so a table with one is
+    /// refused (userdata is refused unless it is a permanent).
+    fn refuse_to_be_closed(&self, value: &mlua::Value, path: &Path) -> Result<(), CaptureError> {
+        let closable = match value {
+            mlua::Value::Table(table) => table.metatable().is_some_and(|meta| {
+                meta.raw_get::<mlua::Value>("__close")
+                    .is_ok_and(|m| !m.is_nil())
+            }),
+            _ => false,
+        };
+        if closable && self.permanents.name_of(value).is_none() {
+            return Err(CaptureError::ToBeClosed {
+                path: path.render(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Lua copies a vararg function and its fixed parameters above the call's arguments, so the
+/// caller's stack then shows the original function, parameters and varargs as temporaries.
+/// They are dead copies; the callee's frame holds the live values.
+fn hidden_slots(info: &Info, frame: &Frame) -> usize {
+    if info.vararg {
+        let params = usize::try_from(info.params).unwrap_or(0);
+        1 + params + frame.varargs.len()
+    } else {
+        0
+    }
+}
+
+fn wrap(frames: Vec<Frame>) -> ThreadData {
+    ThreadData::Suspended { frames }
+}
+
+fn site_of(locals: &[Local]) -> Option<u32> {
+    locals
+        .iter()
+        .find(|local| local.name == SITE)
+        .and_then(|local| match local.value {
+            Value::Integer(site) => u32::try_from(site).ok(),
+            _ => None,
+        })
+}
+
+fn describe(info: &Info) -> String {
+    match &info.name {
+        Some(name) => format!("{} function `{name}`", info.what),
+        None => format!("{} function", info.what),
+    }
+}

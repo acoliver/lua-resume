@@ -29,7 +29,8 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 - **Parser and printer: done.** `syntax::parse` reads Lua 5.4 source into a tree, and `syntax::print` writes a tree back as source that compiles to the same code. Each statement and function keeps its original line, so error messages and `debug.getinfo` report the original lines. The tests compile the original and the printed source with Lua 5.4 and compare the bytecode. Over all 3,387 Lua files that ship with Stranded: Alien Dawn's Mod Tools (927,000 lines), the bytecode is identical for every file. That corpus is not included here; run it with `LUA_RESUME_CORPUS=<dir> cargo test --release -- --ignored`.
 - **Normalization: done.** `rewrite::normalize(&Block, &Compiled)` stages explicit calls and their operands, preserves short-circuiting, rewrites loop conditions and generic iterators, and adds function-local call-site markers. Differential tests compare values, call traces, errors and coroutine yields on stock Lua 5.4. The original compiler's table-read decisions are required input, as described below.
 - **Continuation generation: done for the shapes in old Stranded saves, except backward gotos.** `continuation::continuation_source` generates, from a normalized chunk, the function that finishes a frame from one call site (see below).
-- **Capture of suspended coroutines, value snapshots, frame rebuilding and engine integration: not started.** Capture needs the Lua `debug` library. mlua loads it only through `unsafe`, and this crate forbids unsafe code, so the runtime API will take the host's debug functions as an argument.
+- **Capture of suspended coroutines and the snapshot model: done.** `capture::capture` reads a coroutine suspended in normalized code into a serializable `Snapshot` (see below). It uses the host's debug library through a `Debug` capability, and the `lua-resume-debug` crate creates a state in which only the host can reach that library.
+- **Frame rebuilding (restore) and engine integration: not started.**
 
 ## Normalizing a chunk
 
@@ -83,6 +84,40 @@ Supported:
 
 Refused with an error that names the construct: a `goto` at or after the site to a label before it, a site statement of another kind, a statement with several pending calls, and loops that were not normalized.
 
-## ## License
+## Capturing a coroutine
+
+mlua opens the Lua `debug` library only through an `unsafe` constructor, and this crate forbids unsafe code. The workspace crate `lua-resume-debug` holds the one unsafe call. `new_lua_with_private_debug(libs, options)` creates the state, removes `debug` from the globals and from `package.loaded` before any script runs and returns the debug table to the host. The host builds a `Debug` from that table (`getinfo`, `getlocal`, `getupvalue`, `setupvalue`, `upvalueid`, `upvaluejoin`) and passes it to `capture`.
+
+```rust
+use lua_resume::capture::{capture, Debug, Permanents};
+use lua_resume_debug::new_lua_with_private_debug;
+
+let (lua, debug_table) = new_lua_with_private_debug(mlua::StdLib::ALL_SAFE, Default::default())?;
+let debug = Debug::new(&debug_table)?;
+let permanents = Permanents::standard(&lua)?; // add the engine's own natives with `insert`
+// ... load normalized chunks, run a coroutine until it yields ...
+let snapshot = capture(&lua, &debug, &thread, &permanents)?;
+let json = serde_json::to_string(&snapshot)?;
+```
+
+`capture` accepts a coroutine whose top frame is a yielding native function (`coroutine.yield` or a native named in the permanents) and whose other frames are Lua functions in normalized code. For each frame the snapshot holds the function (chunk name and the lines of its definition), the closure, the site number from `__lrs`, every named local in stack order (generated `__lr` locals included), the varargs, the source line and the call the frame waits in. Frames run from the outermost call to the innermost.
+
+Values are data:
+
+- Tables are shared by identity, so cycles and aliases survive. Entries are ordered by key (booleans, integers, floats, strings, then reference keys in Lua's order) and metatables are recorded.
+- Strings are exact bytes. Integers and floats stay distinct, and floats are stored as their bits, so NaN payloads, infinities and negative zero are exact.
+- A Lua closure is its function plus its upvalue cells. Closures that share an upvalue (found with `debug.upvalueid`) share one cell.
+- Coroutines reachable from the stack are captured too, once each. A finished one is recorded as dead. One suspended outside normalized code is refused.
+- A value found in the `Permanents` (native functions, library tables, `_G`, named userdata) is saved by its name and not entered.
+
+Capture refuses, with an error that names the path to the value (for example ``thread > level 2 > local `box` > ["inner"] > [1]``): a coroutine that is not suspended, a top frame that is not a named yield, a native frame below the top, a frame without an integer `__lrs`, unnamed stack values (`(for state)` and other temporaries), native functions and userdata that are not permanents, stripped functions, and different functions that share a chunk name, lines and shape. Lua keeps no record of `<close>` that the debug library can read, so a local holding a table with a `__close` metamethod is refused as a possible to-be-closed variable.
+
+Limits of this step:
+
+- Two different functions with the same chunk name and lines are told apart only by parameter count, vararg flag, upvalue count and the set of lines with code. Functions that match on all of these are not detected.
+- Dead `(temporary)` slots that a vararg callee leaves in its caller's stack are recognized by count and skipped. Any other temporary is refused.
+- A to-be-closed local that holds nil, false or userdata is not detected.
+
+## License
 
 MIT.
