@@ -4,75 +4,17 @@
 //! coroutine is captured and restored again, and the second snapshot must equal the first.
 
 mod restore_support;
+#[path = "restore_support/scripts.rs"]
+mod scripts;
 
 use lua_resume::capture::{Permanents, Snapshot};
 use lua_resume::restore::{RestoreError, Sources, restore};
-use restore_support::scripts::SCRIPTS;
-use restore_support::{Host, Script, run, through_json};
-
-/// Continues `thread` in `host` through the remaining inputs from yield `from`.
-fn finish(host: &Host, thread: &mlua::Thread, script: &Script, from: usize) -> Vec<String> {
-    let mut events = Vec::new();
-    let mut index = from;
-    loop {
-        events.push(host.step(thread, script.inputs[index]));
-        if !events.last().unwrap().starts_with("yield:") {
-            return events;
-        }
-        index += 1;
-    }
-}
-
-fn fresh_host(script: &Script, globals: &str) -> Host {
-    let host = Host::new(script.source);
-    host.lua.load(globals).exec().unwrap();
-    host
-}
-
-/// Round-trips yield `index`; returns nothing but panics on any difference.
-fn round_trip(script: &Script, index: usize, expected: &restore_support::Run) {
-    let (before, thread, run) = run(script, Some(index));
-    assert_eq!(run.events[..], expected.events[..=index], "{}", script.name);
-    let globals = before.dump_globals();
-    let first = through_json(&before.capture(&thread));
-
-    let second_host = fresh_host(script, &globals);
-    let restored = second_host.restore(&first).unwrap();
-    let again = through_json(&second_host.capture(&restored));
-    assert_eq!(again, first, "{}: re-capture at yield {index}", script.name);
-
-    let rest = finish(&second_host, &restored, script, index);
-    let label = format!("{}: restored at yield {index}", script.name);
-    assert_eq!(rest[..], expected.events[index + 1..], "{label}");
-    assert_eq!(second_host.state(), expected.state, "{label}: globals");
-
-    let third_host = fresh_host(script, &globals);
-    let twice = third_host.restore(&again).unwrap();
-    let rest = finish(&third_host, &twice, script, index);
-    assert_eq!(
-        rest[..],
-        expected.events[index + 1..],
-        "{label}, restored twice"
-    );
-    assert_eq!(
-        third_host.state(),
-        expected.state,
-        "{label}: globals, twice"
-    );
-}
+use restore_support::{Host, round_trip_all, run};
+use scripts::SCRIPTS;
 
 #[test]
 fn every_yield_of_every_script_restores_in_a_fresh_state() {
-    let mut points = 0;
-    for script in SCRIPTS {
-        let (_, _, expected) = run(script, None);
-        let yields = expected.events.len() - 1;
-        assert!(yields > 0, "{} never yields", script.name);
-        for index in 0..yields {
-            round_trip(script, index, &expected);
-            points += 1;
-        }
-    }
+    let points = round_trip_all(SCRIPTS);
     eprintln!("{points} resume points");
     assert!(points >= 20, "only {points} resume points");
 }

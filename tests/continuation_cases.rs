@@ -191,8 +191,9 @@ fn protected_run(input: &str) -> String {
     let lua = Lua::new();
     lua.load(print(&tree)).exec().unwrap();
     let inner_source =
-        continuation_source(&tree, key(1, 5), 1, &["n".into(), "__lrs".into()], &[]).unwrap();
-    let outer_source = continuation_source(&tree, key(6, 9), 1, &["__lrs".into()], &[]).unwrap();
+        continuation_source(&tree, key(1, 5), 1, &["n".into(), "__lrs".into()], &[], &[]).unwrap();
+    let outer_source =
+        continuation_source(&tree, key(6, 9), 1, &["__lrs".into()], &[], &[]).unwrap();
     let wrap: Function = lua.load(PROTECTED_NEXT).eval().unwrap();
     let driver = lua
         .load(
@@ -244,7 +245,7 @@ fn unsupported_shapes_are_refused_with_the_construct_named() {
     let source = "function f()\n  ::top::\n  coroutine.yield(1)\n  goto top\nend\n";
     let tree = normalize_source(source.as_bytes()).unwrap();
     assert_eq!(
-        continuation_source(&tree, key(1, 5), 1, &[], &[]),
+        continuation_source(&tree, key(1, 5), 1, &[], &[], &[]),
         Err(ContinuationError::Unsupported(
             "a goto back to a label before the call"
         ))
@@ -253,7 +254,7 @@ fn unsupported_shapes_are_refused_with_the_construct_named() {
         "function f()\n  for i = 1, 2 do\n    __lrs = 1\n    coroutine.yield(i)\n  end\nend\n";
     let tree = parse(source.as_bytes()).unwrap();
     assert_eq!(
-        continuation_source(&tree, key(1, 6), 1, &[], &[]),
+        continuation_source(&tree, key(1, 6), 1, &[], &[], &[]),
         Err(ContinuationError::Unsupported(
             "a numeric for loop that was not normalized"
         ))

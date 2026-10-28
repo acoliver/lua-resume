@@ -126,6 +126,7 @@ impl Capturer<'_> {
             upvalues: Vec::new(),
         });
         self.closures.insert(key, id);
+        self.functions.push(function.clone());
         let mut upvalues = Vec::new();
         for index in 1..=info.upvalues {
             upvalues.push(self.upvalue(function, index, path)?);

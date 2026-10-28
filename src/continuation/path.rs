@@ -1,6 +1,7 @@
 //! Finding a function and one of its call sites in a normalized tree.
 
-use super::FunctionKey;
+use super::find::{Found, locate};
+use super::{ContinuationError, FunctionKey};
 use crate::syntax::ast::{Block, Expr, FuncBody, Stat, StatKind};
 
 /// A step from a block into the statement at `index`; `branch` selects an `if` arm. An
@@ -11,33 +12,19 @@ pub(super) struct Step {
     pub(super) branch: usize,
 }
 
-pub(super) fn find_function(block: &Block, key: FunctionKey) -> Option<&FuncBody> {
-    for stat in &block.stats {
-        let own = match &stat.kind {
-            StatKind::Function { body, .. } | StatKind::LocalFunction { body, .. } => Some(body),
-            StatKind::Local { values, .. } | StatKind::Assign { values, .. } => {
-                values.iter().find_map(|value| match value {
-                    Expr::Function(body) => Some(body),
-                    _ => None,
-                })
-            }
-            _ => None,
-        };
-        if let Some(body) = own {
-            if body.line == key.line && body.end_line == key.end_line {
-                return Some(body);
-            }
-            if let Some(found) = find_function(&body.body, key) {
-                return Some(found);
-            }
-        }
-        for inner in inner_blocks(stat) {
-            if let Some(found) = find_function(inner, key) {
-                return Some(found);
-            }
-        }
+pub(super) fn find_function(
+    block: &Block,
+    key: FunctionKey,
+) -> Result<&FuncBody, ContinuationError> {
+    match locate(block, key) {
+        Found::One(body) => Ok(body),
+        Found::None => Err(ContinuationError::NoFunction(key.line, key.end_line)),
+        Found::Several(count) => Err(ContinuationError::Ambiguous {
+            line: key.line,
+            end_line: key.end_line,
+            count,
+        }),
     }
-    None
 }
 
 pub(super) fn inner_blocks(stat: &Stat) -> Vec<&Block> {

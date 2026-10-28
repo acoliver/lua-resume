@@ -69,6 +69,16 @@ pub enum Callee {
     Lua(FunctionId),
 }
 
+/// A local of a frame that is the same variable as an upvalue cell: closures that use the
+/// cell read and write the frame's local, and a restore binds them to it again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedLocal {
+    /// An index into [`Frame::locals`].
+    pub local: usize,
+    /// An index into [`Snapshot::cells`].
+    pub cell: usize,
+}
+
 /// A suspended Lua function call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Frame {
@@ -84,6 +94,9 @@ pub struct Frame {
     pub locals: Vec<Local>,
     pub varargs: Vec<Value>,
     pub pending: Callee,
+    /// The locals that closures share through an upvalue cell.
+    #[serde(default)]
+    pub shared: Vec<SharedLocal>,
 }
 
 /// A table's entries in key order and its metatable.

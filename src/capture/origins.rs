@@ -15,6 +15,8 @@ pub(crate) struct Origin {
     pub(crate) closure: Function,
     pub(crate) line: i64,
     pub(crate) tail_call: bool,
+    /// The names of the locals the continuation declared from the save, in order.
+    pub(crate) locals: Vec<String>,
     /// Holds the continuation so its address is not reused while the origin is registered.
     continuation: Function,
 }
@@ -27,11 +29,13 @@ impl Origin {
         closure: Function,
         (line, tail_call): (i64, bool),
         continuation: Function,
+        locals: Vec<String>,
     ) -> Self {
         Self {
             closure,
             line,
             tail_call,
+            locals,
             continuation,
         }
     }

@@ -1,7 +1,10 @@
 //! Reading the frames of one suspended coroutine.
 
+use std::collections::{HashMap, VecDeque};
+
 use mlua::{Thread, ThreadStatus};
 
+use super::alias::Probe;
 use super::debug::Info;
 use super::path::Path;
 use super::{
@@ -10,6 +13,33 @@ use super::{
 
 const SITE: &str = crate::rewrite::SITE;
 const CONTINUATION_PARAMS: usize = 3;
+/// The name Lua gives the hidden registers of a `for` loop.
+const FOR_STATE: &str = "(for state)";
+
+/// A local found on the stack: its index, name, value and path.
+type Found = (i64, String, mlua::Value, Path);
+
+/// Keeps, for each name the restored frame was built with, the last as many copies as the
+/// frame declared, in the order of `saved`. A re-entered loop declares the loop variable and
+/// body locals again, and the code that runs reads the copy declared last.
+fn live_copies(found: Vec<Found>, saved: &[String]) -> Vec<Found> {
+    let mut wanted: HashMap<&str, usize> = HashMap::new();
+    for name in saved {
+        *wanted.entry(name).or_default() += 1;
+    }
+    let mut queues: HashMap<String, VecDeque<Found>> = HashMap::new();
+    for entry in found.into_iter().rev() {
+        let left = wanted.get(entry.1.as_str()).copied().unwrap_or(0);
+        let queue = queues.entry(entry.1.clone()).or_default();
+        if queue.len() < left {
+            queue.push_front(entry);
+        }
+    }
+    saved
+        .iter()
+        .filter_map(|name| queues.get_mut(name).and_then(VecDeque::pop_front))
+        .collect()
+}
 
 impl Capturer<'_> {
     /// The state of `thread`: its frames when suspended, `Dead` when finished.
@@ -42,6 +72,7 @@ impl Capturer<'_> {
         let mut callee = self.top_callee(&top, path)?;
         let mut hidden = 0;
         let mut frames = Vec::new();
+        let mut probes = Vec::new();
         let mut level = 1;
         while let Some(info) = self.debug.level(thread, level)? {
             let here = path.child(format!("level {level}"));
@@ -53,13 +84,16 @@ impl Capturer<'_> {
             }
             let origin = self.origins.get(&info.func.to_pointer().addr()).cloned();
             let pending = (callee, hidden);
-            let frame = self.frame((thread, level), &info, origin.as_ref(), pending, &here)?;
+            let (frame, slots) =
+                self.frame((thread, level), &info, origin.as_ref(), pending, &here)?;
             callee = Callee::Lua(frame.function.clone());
             hidden = hidden_slots(&info, origin.is_some(), &frame);
             frames.push(frame);
+            probes.push((level, slots));
             level += 1;
         }
         frames.reverse();
+        self.add_probes(thread, probes);
         Ok(frames)
     }
 
@@ -90,11 +124,12 @@ impl Capturer<'_> {
         origin: Option<&Origin>,
         (pending, hidden): (Callee, usize),
         path: &Path,
-    ) -> Result<Frame, CaptureError> {
+    ) -> Result<(Frame, Vec<i64>), CaptureError> {
         let running = origin.map_or(&info.func, |origin| &origin.closure);
         let function = self.identify(&self.debug.function(running)?, path)?;
         let closure = self.closure(running, path)?;
-        let locals = self.locals(thread, level, (hidden, origin.is_some()), path)?;
+        let saved = origin.map(|origin| origin.locals.as_slice());
+        let (locals, slots) = self.locals(thread, level, (hidden, saved), path)?;
         let site = site_of(&locals).ok_or_else(|| CaptureError::NotNormalized {
             path: path.render(),
         })?;
@@ -103,7 +138,7 @@ impl Capturer<'_> {
         } else {
             Vec::new()
         };
-        Ok(Frame {
+        let frame = Frame {
             function,
             closure,
             site,
@@ -112,7 +147,28 @@ impl Capturer<'_> {
             locals,
             varargs,
             pending,
-        })
+            shared: Vec::new(),
+        };
+        Ok((frame, slots))
+    }
+
+    /// Queues the frames of `thread` (innermost first) for the search for shared locals.
+    fn add_probes(&mut self, thread: &Thread, probes: Vec<(i64, Vec<i64>)>) {
+        let thread_id = self
+            .threads
+            .get(&thread.to_pointer().addr())
+            .copied()
+            .unwrap_or(0);
+        let count = probes.len();
+        for (position, (level, slots)) in probes.into_iter().enumerate() {
+            self.probes.push(Probe {
+                thread: thread.clone(),
+                thread_id,
+                level,
+                frame: count - 1 - position,
+                slots,
+            });
+        }
     }
 
     /// The identity of a Lua function, checking that no different function shares it.
@@ -152,17 +208,19 @@ impl Capturer<'_> {
         }
     }
 
-    /// The named locals of a frame. `hidden` is the number of dead `(temporary)` slots the
-    /// frame's vararg callee leaves above its locals; other unnamed slots are refused. The
-    /// locals a continuation adds belong to no saved frame and are left out.
+    /// The named locals of a frame and the stack index of each. `hidden` is the number of dead
+    /// `(temporary)` slots the frame's vararg callee leaves above its locals; other unnamed
+    /// slots are refused, except the loop state Lua keeps for `for`, which the normalized
+    /// locals replace. `saved` names the locals a restored frame was built with: the
+    /// continuation declares its own copies of loop locals, so the live one is the last.
     fn locals(
         &mut self,
         thread: &Thread,
         level: i64,
-        (hidden, restored): (usize, bool),
+        (hidden, saved): (usize, Option<&[String]>),
         path: &Path,
-    ) -> Result<Vec<Local>, CaptureError> {
-        let mut locals = Vec::new();
+    ) -> Result<(Vec<Local>, Vec<i64>), CaptureError> {
+        let mut found = Vec::new();
         let mut skipped = 0;
         let mut index = 0;
         while let Some((name, value)) = self.debug.local(thread, level, index + 1)? {
@@ -171,7 +229,7 @@ impl Capturer<'_> {
                 skipped += 1;
                 continue;
             }
-            if restored && is_continuation_local(&name) {
+            if name == FOR_STATE || (saved.is_some() && is_continuation_local(&name)) {
                 continue;
             }
             let here = path.child(format!("local `{name}`"));
@@ -182,8 +240,7 @@ impl Capturer<'_> {
                 });
             }
             self.refuse_to_be_closed(&value, &here)?;
-            let value = self.value(&value, &here)?;
-            locals.push(Local { name, value });
+            found.push((index, name, value, here));
         }
         if skipped != hidden {
             return Err(CaptureError::Unnamed {
@@ -191,7 +248,17 @@ impl Capturer<'_> {
                 name: "(temporary)".to_owned(),
             });
         }
-        Ok(locals)
+        if let Some(saved) = saved {
+            found = live_copies(found, saved);
+        }
+        let mut locals = Vec::new();
+        let mut slots = Vec::new();
+        for (index, name, value, here) in found {
+            let value = self.value(&value, &here)?;
+            locals.push(Local { name, value });
+            slots.push(index);
+        }
+        Ok((locals, slots))
     }
 
     fn varargs(

@@ -177,7 +177,7 @@ fn original(case: &Case, tree: &Block) -> Run {
 fn resumed(case: &Case, tree: &Block, snap: &Snap, locals: &[String], rest: &[&str]) -> Run {
     let lua = Lua::new();
     setup(&lua, case, tree);
-    let source = continuation_source(tree, case.key, snap.site, locals, &[]).unwrap();
+    let source = continuation_source(tree, case.key, snap.site, locals, &[], &[]).unwrap();
     let continuation: Function = lua.load(&source).eval().unwrap();
     let load: Function = lua.globals().get("__load").unwrap();
     let restore: Function = lua.globals().get("__restore").unwrap();

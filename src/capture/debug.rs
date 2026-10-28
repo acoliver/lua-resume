@@ -9,6 +9,7 @@ use mlua::{Function, MultiValue, Table, Thread, Value};
 pub struct Debug {
     pub getinfo: Function,
     pub getlocal: Function,
+    pub setlocal: Function,
     pub getupvalue: Function,
     pub setupvalue: Function,
     pub upvalueid: Function,
@@ -67,6 +68,7 @@ impl Debug {
         Ok(Self {
             getinfo: table.get("getinfo")?,
             getlocal: table.get("getlocal")?,
+            setlocal: table.get("setlocal")?,
             getupvalue: table.get("getupvalue")?,
             setupvalue: table.get("setupvalue")?,
             upvalueid: table.get("upvalueid")?,
@@ -101,6 +103,19 @@ impl Debug {
         };
         let value = values.next().unwrap_or(Value::Nil);
         Ok(Some((name.to_string_lossy(), value)))
+    }
+
+    /// Assigns `value` to the local `index` of the call at `level`.
+    pub fn set_local(
+        &self,
+        thread: &Thread,
+        level: i64,
+        index: i64,
+        value: Value,
+    ) -> mlua::Result<()> {
+        self.setlocal
+            .call::<MultiValue>((thread.clone(), level, index, value))
+            .map(drop)
     }
 
     /// The name and value of upvalue `index` of `function`.

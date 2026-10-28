@@ -1,10 +1,14 @@
 //! Rebuilding tables, upvalue cells, closures and coroutine shells from a snapshot.
 
+use std::cell::RefCell;
+
 use mlua::{Function, Lua, MultiValue, Table, Thread, Value as Lua_};
 
 use super::{Helpers, RestoreError, Sources};
-use crate::capture::{ClosureData, Debug, Permanents, Snapshot, ThreadData, UpvalueRef, Value};
-use crate::continuation::function_source;
+use crate::capture::{
+    ClosureData, Debug, FunctionId, Permanents, Snapshot, ThreadData, UpvalueRef, Value,
+};
+use crate::continuation::{ContinuationError, function_source};
 
 /// The name Lua gives the global environment upvalue. Its cell is joined like any other, so
 /// it is never declared as a local of a generated function.
@@ -22,6 +26,33 @@ pub(super) struct Restorer<'a> {
     pub(super) closures: Vec<Function>,
     pub(super) threads: Vec<Thread>,
     pub(super) slots: Vec<Table>,
+    /// The locals of restored frames that closures share, bound once the frames have run.
+    pub(super) binds: RefCell<Vec<Bind>>,
+    /// Each continuation with the index of the closure whose cells it uses.
+    pub(super) continuations: RefCell<Vec<(usize, Function)>>,
+}
+
+/// The functions a frame's continuation stored for its shared locals.
+pub(super) struct Bind {
+    /// Filled by the continuation: the function holding each shared local, in `shared` order.
+    pub(super) helpers: Table,
+    /// The snapshot cell of each shared local.
+    pub(super) shared: Vec<usize>,
+}
+
+/// A function lookup failure: a function the source does not define, or a continuation error.
+pub(super) fn function_error(id: &FunctionId, source: ContinuationError) -> RestoreError {
+    match source {
+        ContinuationError::NoFunction(..) => RestoreError::UnknownFunction {
+            chunk: id.chunk.clone(),
+            line: id.line,
+            end_line: id.end_line,
+        },
+        source => RestoreError::Continuation {
+            function: format!("{}:{}-{}", id.chunk, id.line, id.end_line),
+            source,
+        },
+    }
 }
 
 pub(super) fn upvalue_names(data: &ClosureData) -> Vec<String> {
@@ -52,6 +83,8 @@ impl<'a> Restorer<'a> {
             closures: Vec::new(),
             threads: Vec::new(),
             slots: Vec::new(),
+            binds: RefCell::new(Vec::new()),
+            continuations: RefCell::new(Vec::new()),
         })
     }
 
@@ -156,13 +189,8 @@ impl<'a> Restorer<'a> {
             .sources
             .get(&id.chunk)
             .ok_or_else(|| RestoreError::UnknownChunk(id.chunk.clone()))?;
-        let source = function_source(tree, id.key(), &upvalue_names(data)).map_err(|_| {
-            RestoreError::UnknownFunction {
-                chunk: id.chunk.clone(),
-                line: id.line,
-                end_line: id.end_line,
-            }
-        })?;
+        let source = function_source(tree, id.key(), &upvalue_names(data))
+            .map_err(|source| function_error(id, source))?;
         let function: Function = self
             .lua
             .load(source)
@@ -222,6 +250,45 @@ impl<'a> Restorer<'a> {
             self.debug
                 .upvaluejoin
                 .call::<()>((function.clone(), index, holder.clone(), 1))?;
+        }
+        Ok(())
+    }
+
+    /// Binds every closure and continuation that shares a cell with a restored frame's local
+    /// to that local, through the function the frame's continuation made for it.
+    pub(super) fn bind_shared(&self) -> Result<(), RestoreError> {
+        for bind in self.binds.borrow().iter() {
+            for (index, cell) in (1..).zip(&bind.shared) {
+                let helper: Function = bind.helpers.get(index)?;
+                for (data, function) in self.snapshot.closures.iter().zip(&self.closures) {
+                    self.rebind(function, &data.upvalues, (*cell, &helper))?;
+                }
+                for (closure, function) in self.continuations.borrow().iter() {
+                    let data = &self.snapshot.closures[*closure];
+                    self.rebind(function, &data.upvalues, (*cell, &helper))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn rebind(
+        &self,
+        function: &Function,
+        upvalues: &[UpvalueRef],
+        (cell, helper): (usize, &Function),
+    ) -> Result<(), RestoreError> {
+        let count = self.debug.function(function)?.upvalues;
+        for index in 1..=count {
+            let (name, _) = self.debug.upvalue(function, index)?;
+            if upvalues
+                .iter()
+                .any(|saved| saved.name == name && saved.cell == cell)
+            {
+                self.debug
+                    .upvaluejoin
+                    .call::<()>((function.clone(), index, helper.clone(), 1))?;
+            }
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 //! Normalized-script fixtures for the round-trip suite. Errors use level 0 so messages do not
 //! depend on the line a continuation reports.
 
-use super::Script;
+use crate::restore_support::Script;
 
 pub const SCRIPTS: &[Script] = &[
     Script {

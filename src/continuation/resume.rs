@@ -10,17 +10,20 @@ use crate::syntax::ast::{Block, Stat, StatKind};
 pub(super) fn resume_block(
     block: &Block,
     steps: &[Step],
-    depth: usize,
+    (depth, binds): (usize, &[Stat]),
 ) -> Result<Block, ContinuationError> {
     let step = steps[depth];
     let mut ret = block.ret.clone();
     let mut entered = Vec::new();
     if depth + 1 < steps.len() {
-        entered.push(resume_container(&block.stats[step.index], steps, depth)?);
+        let container = &block.stats[step.index];
+        entered.push(resume_container(container, steps, (depth, binds))?);
     } else if step.index == block.stats.len() {
         let pending = block.ret.as_ref().expect("the step names a return");
+        entered.extend(binds.iter().cloned());
         ret = Some(site_return(pending)?);
     } else {
+        entered.extend(binds.iter().cloned());
         entered.push(site_stat(&block.stats[step.index])?);
     }
     check_labels(block, step.index)?;
@@ -64,12 +67,13 @@ fn gotos<'a>(stat: &'a Stat, out: &mut Vec<&'a str>) {
     }
 }
 
-fn sub_block(block: &Block, steps: &[Step], depth: usize) -> Result<Block, ContinuationError> {
-    resume_block(block, steps, depth)
-}
-
-fn resume_container(stat: &Stat, steps: &[Step], depth: usize) -> Result<Stat, ContinuationError> {
-    let next = depth + 1;
+fn resume_container(
+    stat: &Stat,
+    steps: &[Step],
+    (depth, binds): (usize, &[Stat]),
+) -> Result<Stat, ContinuationError> {
+    let next = (depth + 1, binds);
+    let sub_block = resume_block;
     let kind = match &stat.kind {
         StatKind::Do(body) => StatKind::Do(sub_block(body, steps, next)?),
         StatKind::If { arms, otherwise } => {
