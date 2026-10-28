@@ -10,7 +10,7 @@ use import_support::{
 use lua_resume::capture::Permanents;
 use lua_resume::capture::{TableData, Value};
 use lua_resume::import::{ImportChunk, ImportError, ImportSources, PermanentMap, import_thread};
-use lua_resume::restore::restore;
+use lua_resume::restore::{restore, restore_all};
 use lua_resume::strip::strip_debug_calls;
 use lua_resume::syntax::parse;
 use mlua::{Function, Thread};
@@ -90,6 +90,44 @@ fn a_nested_call_resumes_both_frames() {
     world.frame(leaf, 0, &[int(5)], yield_fn());
     world.yielded();
     resumed(&world, "nested", "5", &["7"], 0);
+}
+
+#[test]
+fn an_imported_snapshot_restores_as_one_captured_coroutine_without_roots() {
+    let mut world = World::new();
+    let numfor = world.closure(line_of("numfor"), &[]);
+    let registers = [int(3), int(10), int(2), int(3), int(1), int(2)];
+    world.frame(numfor, 0, &registers, yield_fn());
+    world.yielded();
+    let expected = uninterrupted("numfor", "3", &["10", "20", "30"]);
+    let fresh = host();
+    let imported = import_thread(
+        &world.thread,
+        &world.heap,
+        &sources(&fresh),
+        &fresh.permanents,
+        &PermanentMap::default(),
+    )
+    .unwrap();
+    assert_eq!(imported.snapshot.captured, [0]);
+    assert_eq!(imported.snapshot.roots.len(), 0);
+    let restored = restore_all(
+        &fresh.lua,
+        &fresh.debug,
+        &imported.snapshot,
+        &sources(&fresh).restore_sources(),
+        &fresh.permanents,
+    )
+    .unwrap();
+    assert_eq!(restored.roots.len(), 0);
+    let [thread] = restored.threads.as_slice() else {
+        panic!("expected one captured coroutine");
+    };
+    let rest: Vec<String> = ["20", "30"]
+        .iter()
+        .map(|input| fresh.step(thread, input))
+        .collect();
+    assert_eq!(rest[..], expected[2..]);
 }
 
 #[test]
