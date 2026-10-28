@@ -26,7 +26,7 @@ mod site;
 
 use crate::syntax::ast::{Block, Expr, Stat, StatKind};
 use crate::syntax::{parse, print};
-use path::{find_function, find_site};
+use path::{find_function, find_site, scope_at};
 
 /// Why a continuation cannot be generated.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -130,4 +130,31 @@ pub fn function_source(
         .expect("generated snippet parses")
         .ret;
     Ok(print(&Block { stats, ret }))
+}
+
+/// The locals in scope at a call site of a normalized function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteScope {
+    /// Parameters, then each local declared before the site, in declaration order.
+    pub locals: Vec<String>,
+    /// Whether the site statement is a `return`.
+    pub in_return: bool,
+}
+
+/// The locals a continuation of `function` at `site` declares, in order.
+pub fn site_scope(
+    chunk: &Block,
+    function: FunctionKey,
+    site: u32,
+) -> Result<SiteScope, ContinuationError> {
+    let body = find_function(chunk, function).ok_or(ContinuationError::NoFunction(
+        function.line,
+        function.end_line,
+    ))?;
+    let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
+    let scope = scope_at(body, &steps);
+    Ok(SiteScope {
+        locals: scope.names,
+        in_return: scope.in_return,
+    })
 }
