@@ -3,7 +3,7 @@
 mod capture_support;
 
 use capture_support::host;
-use lua_resume::capture::{Callee, Snapshot, ThreadData, Value};
+use lua_resume::capture::{Callee, Metatable, Snapshot, ThreadData, Value};
 use mlua::{Thread, ThreadStatus, Value as Lua};
 
 const WORKER: &str = "function worker(n)
@@ -233,7 +233,9 @@ end
     let Value::Table(id) = *local(&snapshot, 0, "t") else {
         panic!("t is a table");
     };
-    let meta = snapshot.tables[id].metatable.unwrap();
+    let Some(Metatable::Table(meta)) = snapshot.tables[id].metatable else {
+        panic!("t has a snapshot table as its metatable");
+    };
     assert_eq!(
         snapshot.tables[meta].entries,
         [(

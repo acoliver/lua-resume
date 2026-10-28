@@ -50,9 +50,9 @@ pub struct SavedClosure {
     pub upvalues: Vec<usize>,
 }
 
-/// The objects the stack reaches, already in the snapshot's value model. `Value::Closure(i)`
-/// is `closures[i]`, `Value::Table(i)` is `tables[i]` and `Value::Thread(i)` is
-/// `threads[i - 1]`, because the imported thread is thread 0.
+/// The objects the stacks reach, already in the snapshot's value model. `Value::Closure(i)`
+/// is `closures[i]` and `Value::Table(i)` is `tables[i]`. The imported threads come first in
+/// the snapshot, so with `n` of them `Value::Thread(i)` is `threads[i - n]` for `i >= n`.
 #[derive(Clone, Debug, Default)]
 pub struct SavedHeap {
     pub tables: Vec<TableData>,
@@ -60,6 +60,8 @@ pub struct SavedHeap {
     pub closures: Vec<SavedClosure>,
     pub protos: Vec<Proto<(), ()>>,
     pub threads: Vec<ThreadData>,
+    /// Named data the host wants restored with the threads, such as the save's root table.
+    pub roots: Vec<(String, Value)>,
 }
 
 /// A chunk of the game: how the 5.4 state names it, and its source as the 5.3 build saw it

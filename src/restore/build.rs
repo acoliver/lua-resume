@@ -6,7 +6,7 @@ use mlua::{Function, Lua, MultiValue, Table, Thread, Value as Lua_};
 
 use super::{Helpers, RestoreError, Sources};
 use crate::capture::{
-    ClosureData, Debug, FunctionId, Permanents, Snapshot, ThreadData, UpvalueRef, Value,
+    ClosureData, Debug, FunctionId, Metatable, Permanents, Snapshot, ThreadData, UpvalueRef, Value,
 };
 use crate::continuation::{ContinuationError, function_source};
 
@@ -135,11 +135,24 @@ impl<'a> Restorer<'a> {
             for (key, value) in &data.entries {
                 table.raw_set(self.to_lua(key)?, self.to_lua(value)?)?;
             }
-            if let Some(meta) = data.metatable {
-                table.set_metatable(Some(self.table(meta)?.clone()));
+            if let Some(meta) = &data.metatable {
+                table.set_metatable(Some(self.metatable(meta)?));
             }
         }
         Ok(())
+    }
+
+    fn metatable(&self, meta: &Metatable) -> Result<Table, RestoreError> {
+        match meta {
+            Metatable::Table(index) => Ok(self.table(*index)?.clone()),
+            Metatable::Permanent(name) => match self.permanent(name)? {
+                Lua_::Table(table) => Ok(table),
+                other => Err(RestoreError::Malformed(format!(
+                    "the permanent `{name}` is a {}, which cannot be a metatable",
+                    other.type_name()
+                ))),
+            },
+        }
     }
 
     fn table(&self, index: usize) -> Result<&Table, RestoreError> {

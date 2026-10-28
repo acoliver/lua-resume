@@ -109,6 +109,18 @@ impl World {
         }
     }
 
+    /// Takes the thread built so far and starts an empty one on the same heap.
+    pub fn next_thread(&mut self) -> SavedThread {
+        self.next_func = 1;
+        std::mem::replace(
+            &mut self.thread,
+            SavedThread {
+                stack: vec![Value::Nil],
+                ..SavedThread::default()
+            },
+        )
+    }
+
     pub fn cell(&mut self, value: Value) -> usize {
         self.heap.cells.push(Cell { value });
         self.heap.cells.len() - 1

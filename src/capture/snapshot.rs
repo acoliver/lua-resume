@@ -102,11 +102,25 @@ pub struct Frame {
     pub shared: Vec<SharedLocal>,
 }
 
+/// The metatable of a table: another table of the snapshot, or a permanent the host names.
+///
+/// A snapshot written before permanent metatables existed holds a bare index, which loads as
+/// [`Metatable::Table`]. A name is written as a string. The engine saves class tables that
+/// way, because it names them and does not enter them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Metatable {
+    /// An index into [`Snapshot::tables`].
+    Table(usize),
+    /// The name of a table in the host's permanents.
+    Permanent(String),
+}
+
 /// A table's entries in key order and its metatable.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableData {
     pub entries: Vec<(Value, Value)>,
-    pub metatable: Option<usize>,
+    pub metatable: Option<Metatable>,
 }
 
 /// An upvalue of a closure.

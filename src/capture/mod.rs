@@ -31,8 +31,8 @@ pub use debug::{Debug, Info};
 pub use error::{CaptureError, PermanentError};
 pub use permanents::Permanents;
 pub use snapshot::{
-    Callee, Cell, ClosureData, Frame, FunctionId, Local, SharedLocal, Snapshot, TableData,
-    ThreadData, UpvalueRef, Value,
+    Callee, Cell, ClosureData, Frame, FunctionId, Local, Metatable, SharedLocal, Snapshot,
+    TableData, ThreadData, UpvalueRef, Value,
 };
 
 use std::collections::HashMap;

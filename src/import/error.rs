@@ -19,6 +19,11 @@ pub enum ImportError {
     UnknownChunk { path: String, source_name: String },
     #[error("{path}: the permanent `{name}` is not registered")]
     MissingPermanent { path: String, name: String },
+    #[error("thread {thread}: {source}")]
+    Thread {
+        thread: usize,
+        source: Box<ImportError>,
+    },
     #[error("{path}: {reason}")]
     Malformed { path: String, reason: String },
 }
@@ -28,6 +33,13 @@ impl ImportError {
         Self::Frame {
             frame,
             reason: reason.into(),
+        }
+    }
+
+    pub(super) fn in_thread(thread: usize, source: Self) -> Self {
+        Self::Thread {
+            thread,
+            source: Box::new(source),
         }
     }
 

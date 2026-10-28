@@ -18,6 +18,13 @@
 //! continuation) becomes a frame waiting in `pcall`. The native function at the top is the
 //! pending call of the innermost frame. A frame replaced by a tail call is an ordinary frame.
 //!
+//! [`import_thread`] converts one thread. [`import_threads`] converts many threads that share
+//! one heap in a single pass: the heap is converted once, the threads come first in the
+//! snapshot in the order given, and [`SavedHeap::roots`] names data, such as the save's root
+//! table, that `restore_all` restores with them. A table whose metatable is a permanent, such
+//! as a class table the host registers, is a [`Metatable::Permanent`] in
+//! [`TableData`](crate::capture::TableData).
+//!
 //! Frames are refused with their number: temporaries in registers below the callee, a
 //! prototype or chunk the host does not know, a call that is a different kind in the save and
 //! the source, a native frame in the middle that is not a protected call, and permanents the
@@ -32,6 +39,7 @@ mod error;
 mod frames;
 mod locals;
 mod model;
+mod permanents;
 
 pub use error::ImportError;
 pub use model::{
@@ -77,6 +85,8 @@ pub(crate) struct Importer<'a> {
 
 /// Imports `thread`. `known` holds the permanents the 5.4 host registered, and `names` maps
 /// the labels of the save to them.
+///
+/// This is [`import_threads`] for one thread, with the errors of that thread unwrapped.
 pub fn import_thread(
     thread: &SavedThread,
     heap: &SavedHeap,
@@ -84,52 +94,105 @@ pub fn import_thread(
     known: &Permanents,
     names: &PermanentMap,
 ) -> Result<Imported, ImportError> {
-    let mut thread = thread.clone();
-    let mut heap = heap.clone();
-    rename_permanents(&mut thread, &mut heap, names);
-    let mut importer = Importer {
-        sources,
-        protos: &heap.protos,
-        saved_closures: &heap.closures,
-        closures: Vec::new(),
-    };
-    importer.closures = importer.convert_closures(&heap)?;
-    let mut snapshot = Snapshot {
-        threads: vec![ThreadData::Dead],
-        tables: heap.tables.clone(),
-        closures: importer.closures.clone(),
-        cells: heap.cells.clone(),
-        roots: Vec::new(),
-        captured: vec![0],
-    };
-    snapshot.threads.extend(heap.threads.iter().cloned());
-    let open = importer.open_upvalues(&thread, &mut snapshot)?;
-    let mut frames = importer.thread_frames(&thread)?;
-    share_open_locals(&mut frames, &open)?;
-    check_permanents(&frames, &snapshot, known)?;
-    snapshot.threads[0] = ThreadData::Suspended { frames };
-    Ok(Imported { snapshot })
+    let mut session = Session::new(1, heap, sources, known, names)?;
+    session.add(0, thread)?;
+    Ok(Imported {
+        snapshot: session.snapshot,
+    })
 }
 
-fn rename_value(value: &mut Value, names: &PermanentMap) {
-    if let Value::Permanent(name) = value {
-        *name = names.host_name(name);
+/// Imports `threads` and the heap they share as one [`Snapshot`], in one pass over the heap.
+///
+/// The threads are `threads[0..n]` of the snapshot in the order given and
+/// [`Snapshot::captured`] lists them. `Value::Thread(i)` in a thread or the heap means
+/// `threads[i]` of the snapshot, so the coroutines that are not imported as threads are
+/// `heap.threads` from index `n`. The tables, cells and closures of `heap` appear once, so
+/// whatever several threads and [`SavedHeap::roots`] share is shared after a restore. Pass the
+/// snapshot to `restore_all`.
+///
+/// A thread that cannot be imported is reported as [`ImportError::Thread`] with its index.
+pub fn import_threads(
+    threads: &[SavedThread],
+    heap: &SavedHeap,
+    sources: &ImportSources,
+    known: &Permanents,
+    names: &PermanentMap,
+) -> Result<Snapshot, ImportError> {
+    let mut session = Session::new(threads.len(), heap, sources, known, names)?;
+    for (index, thread) in threads.iter().enumerate() {
+        session
+            .add(index, thread)
+            .map_err(|source| ImportError::in_thread(index, source))?;
+    }
+    Ok(session.snapshot)
+}
+
+/// The heap converted once, and the snapshot that threads are added to.
+struct Session<'a> {
+    importer: Importer<'a>,
+    snapshot: Snapshot,
+    known: &'a Permanents,
+    names: &'a PermanentMap,
+}
+
+impl<'a> Session<'a> {
+    fn new(
+        count: usize,
+        heap: &'a SavedHeap,
+        sources: &'a ImportSources,
+        known: &'a Permanents,
+        names: &'a PermanentMap,
+    ) -> Result<Self, ImportError> {
+        let mut importer = Importer {
+            sources,
+            protos: &heap.protos,
+            saved_closures: &heap.closures,
+            closures: Vec::new(),
+        };
+        importer.closures = importer.convert_closures(heap)?;
+        let mut snapshot = Snapshot {
+            threads: vec![ThreadData::Dead; count],
+            tables: heap.tables.clone(),
+            closures: importer.closures.clone(),
+            cells: heap.cells.clone(),
+            roots: heap.roots.clone(),
+            captured: (0..count).collect(),
+        };
+        snapshot.threads.extend(heap.threads.iter().cloned());
+        permanents::rename_heap(&mut snapshot, names);
+        permanents::check_heap(&snapshot, known)?;
+        check_roots(&snapshot)?;
+        Ok(Self {
+            importer,
+            snapshot,
+            known,
+            names,
+        })
+    }
+
+    /// Converts `thread` into `threads[index]` of the snapshot.
+    fn add(&mut self, index: usize, thread: &SavedThread) -> Result<(), ImportError> {
+        let mut thread = thread.clone();
+        permanents::rename_stack(&mut thread, self.names);
+        let open = self.importer.open_upvalues(&thread, &mut self.snapshot)?;
+        let mut frames = self.importer.thread_frames(&thread)?;
+        share_open_locals(&mut frames, &open)?;
+        permanents::check_frames(&frames, self.known)?;
+        self.snapshot.threads[index] = ThreadData::Suspended { frames };
+        Ok(())
     }
 }
 
-fn rename_permanents(thread: &mut SavedThread, heap: &mut SavedHeap, names: &PermanentMap) {
-    for value in &mut thread.stack {
-        rename_value(value, names);
-    }
-    for cell in &mut heap.cells {
-        rename_value(&mut cell.value, names);
-    }
-    for table in &mut heap.tables {
-        for (key, value) in &mut table.entries {
-            rename_value(key, names);
-            rename_value(value, names);
+fn check_roots(snapshot: &Snapshot) -> Result<(), ImportError> {
+    for (at, (name, _)) in snapshot.roots.iter().enumerate() {
+        if snapshot.roots[..at].iter().any(|(known, _)| known == name) {
+            return Err(ImportError::malformed(
+                format!("root `{name}`"),
+                "the name is used by another root",
+            ));
         }
     }
+    Ok(())
 }
 
 /// Lists in each frame the locals that open upvalues point at.
@@ -156,50 +219,6 @@ fn share_open_locals(
         };
         if !frame.shared.contains(&shared) {
             frame.shared.push(shared);
-        }
-    }
-    Ok(())
-}
-
-fn check_permanents(
-    frames: &[crate::capture::Frame],
-    snapshot: &Snapshot,
-    known: &Permanents,
-) -> Result<(), ImportError> {
-    let check = |path: String, value: &Value| match value {
-        Value::Permanent(name) if known.get(name).is_none() => Err(ImportError::MissingPermanent {
-            path,
-            name: name.clone(),
-        }),
-        Value::LightUserData(handle) if known.light(*handle).is_none() => {
-            Err(ImportError::MissingPermanent {
-                path,
-                name: format!("light userdata {handle}"),
-            })
-        }
-        _ => Ok(()),
-    };
-    for (at, frame) in frames.iter().enumerate() {
-        for local in &frame.locals {
-            check(format!("frame {at} > local `{}`", local.name), &local.value)?;
-        }
-        for (index, value) in frame.varargs.iter().enumerate() {
-            check(format!("frame {at} > vararg {}", index + 1), value)?;
-        }
-        if let Callee::Native(name) = &frame.pending {
-            check(
-                format!("frame {at} > pending call"),
-                &Value::Permanent(name.clone()),
-            )?;
-        }
-    }
-    for (index, cell) in snapshot.cells.iter().enumerate() {
-        check(format!("cell {index}"), &cell.value)?;
-    }
-    for (index, table) in snapshot.tables.iter().enumerate() {
-        for (key, value) in &table.entries {
-            check(format!("table {index} key"), key)?;
-            check(format!("table {index} value"), value)?;
         }
     }
     Ok(())
