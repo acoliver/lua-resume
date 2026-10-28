@@ -24,7 +24,7 @@ mod path;
 mod resume;
 mod site;
 
-use crate::syntax::ast::{Block, Stat};
+use crate::syntax::ast::{Block, Expr, Stat, StatKind};
 use crate::syntax::{parse, print};
 use path::{find_function, find_site};
 
@@ -101,4 +101,33 @@ pub(super) fn snippet(text: &str) -> Vec<Stat> {
     parse(text.as_bytes())
         .expect("generated snippet parses")
         .stats
+}
+
+/// Chunk source that evaluates to the function defined at `function`, with `upvalues` declared
+/// as locals in the order given and every other free name left to `_ENV`. The function keeps
+/// its definition lines, so the host can check it found the function the snapshot names.
+pub fn function_source(
+    chunk: &Block,
+    function: FunctionKey,
+    upvalues: &[String],
+) -> Result<String, ContinuationError> {
+    let body = find_function(chunk, function).ok_or(ContinuationError::NoFunction(
+        function.line,
+        function.end_line,
+    ))?;
+    let mut stats = Vec::new();
+    if !upvalues.is_empty() {
+        stats.extend(snippet(&format!("local {}", upvalues.join(", "))));
+    }
+    let mut definition = snippet("local __lr_f = nil");
+    let StatKind::Local { values, .. } = &mut definition[0].kind else {
+        unreachable!("the snippet is a local")
+    };
+    values[0] = Expr::Function(Box::new(body.clone()));
+    definition[0].line = body.line;
+    stats.extend(definition);
+    let ret = parse(b"return __lr_f")
+        .expect("generated snippet parses")
+        .ret;
+    Ok(print(&Block { stats, ret }))
 }

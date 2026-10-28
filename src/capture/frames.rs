@@ -4,9 +4,12 @@ use mlua::{Thread, ThreadStatus};
 
 use super::debug::Info;
 use super::path::Path;
-use super::{Callee, CaptureError, Capturer, Frame, FunctionId, Local, Shape, ThreadData, Value};
+use super::{
+    Callee, CaptureError, Capturer, Frame, FunctionId, Local, Origin, Shape, ThreadData, Value,
+};
 
 const SITE: &str = crate::rewrite::SITE;
+const CONTINUATION_PARAMS: usize = 3;
 
 impl Capturer<'_> {
     /// The state of `thread`: its frames when suspended, `Dead` when finished.
@@ -48,9 +51,11 @@ impl Capturer<'_> {
                     name: info.name.unwrap_or_else(|| "?".to_owned()),
                 });
             }
-            let frame = self.frame(thread, level, &info, (callee, hidden), &here)?;
+            let origin = self.origins.get(&info.func.to_pointer().addr()).cloned();
+            let pending = (callee, hidden);
+            let frame = self.frame((thread, level), &info, origin.as_ref(), pending, &here)?;
             callee = Callee::Lua(frame.function.clone());
-            hidden = hidden_slots(&info, &frame);
+            hidden = hidden_slots(&info, origin.is_some(), &frame);
             frames.push(frame);
             level += 1;
         }
@@ -80,15 +85,16 @@ impl Capturer<'_> {
 
     fn frame(
         &mut self,
-        thread: &Thread,
-        level: i64,
+        (thread, level): (&Thread, i64),
         info: &Info,
+        origin: Option<&Origin>,
         (pending, hidden): (Callee, usize),
         path: &Path,
     ) -> Result<Frame, CaptureError> {
-        let function = self.identify(info, path)?;
-        let closure = self.closure(&info.func, path)?;
-        let locals = self.locals(thread, level, hidden, path)?;
+        let running = origin.map_or(&info.func, |origin| &origin.closure);
+        let function = self.identify(&self.debug.function(running)?, path)?;
+        let closure = self.closure(running, path)?;
+        let locals = self.locals(thread, level, (hidden, origin.is_some()), path)?;
         let site = site_of(&locals).ok_or_else(|| CaptureError::NotNormalized {
             path: path.render(),
         })?;
@@ -101,8 +107,8 @@ impl Capturer<'_> {
             function,
             closure,
             site,
-            line: info.current_line,
-            tail_call: info.tail_call,
+            line: origin.map_or(info.current_line, |origin| origin.line),
+            tail_call: origin.map_or(info.tail_call, |origin| origin.tail_call),
             locals,
             varargs,
             pending,
@@ -147,12 +153,13 @@ impl Capturer<'_> {
     }
 
     /// The named locals of a frame. `hidden` is the number of dead `(temporary)` slots the
-    /// frame's vararg callee leaves above its locals; other unnamed slots are refused.
+    /// frame's vararg callee leaves above its locals; other unnamed slots are refused. The
+    /// locals a continuation adds belong to no saved frame and are left out.
     fn locals(
         &mut self,
         thread: &Thread,
         level: i64,
-        hidden: usize,
+        (hidden, restored): (usize, bool),
         path: &Path,
     ) -> Result<Vec<Local>, CaptureError> {
         let mut locals = Vec::new();
@@ -162,6 +169,9 @@ impl Capturer<'_> {
             index += 1;
             if name == "(temporary)" && skipped < hidden {
                 skipped += 1;
+                continue;
+            }
+            if restored && is_continuation_local(&name) {
                 continue;
             }
             let here = path.child(format!("local `{name}`"));
@@ -220,11 +230,22 @@ impl Capturer<'_> {
     }
 }
 
+/// Locals a generated continuation declares besides the frame's saved locals: its parameters
+/// and the first-iteration flags and saved control values of re-entered loops.
+fn is_continuation_local(name: &str) -> bool {
+    matches!(name, "__lr_v" | "__lr_next" | "__lr_unpack")
+        || name.starts_with("__lr_first")
+        || name.starts_with("__lr_var")
+}
+
 /// Lua copies a vararg function and its fixed parameters above the call's arguments, so the
 /// caller's stack then shows the original function, parameters and varargs as temporaries.
-/// They are dead copies; the callee's frame holds the live values.
-fn hidden_slots(info: &Info, frame: &Frame) -> usize {
-    if info.vararg {
+/// They are dead copies; the callee's frame holds the live values. A continuation has the
+/// three fixed parameters `__lr_v`, `__lr_next` and `__lr_unpack`.
+fn hidden_slots(info: &Info, restored: bool, frame: &Frame) -> usize {
+    if restored {
+        1 + CONTINUATION_PARAMS + frame.varargs.len()
+    } else if info.vararg {
         let params = usize::try_from(info.params).unwrap_or(0);
         1 + params + frame.varargs.len()
     } else {

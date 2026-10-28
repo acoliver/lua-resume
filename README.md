@@ -30,7 +30,8 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 - **Normalization: done.** `rewrite::normalize(&Block, &Compiled)` stages explicit calls and their operands, preserves short-circuiting, rewrites loop conditions and generic iterators, and adds function-local call-site markers. Differential tests compare values, call traces, errors and coroutine yields on stock Lua 5.4. The original compiler's table-read decisions are required input, as described below.
 - **Continuation generation: done for the shapes in old Stranded saves, except backward gotos.** `continuation::continuation_source` generates, from a normalized chunk, the function that finishes a frame from one call site (see below).
 - **Capture of suspended coroutines and the snapshot model: done.** `capture::capture` reads a coroutine suspended in normalized code into a serializable `Snapshot` (see below). It uses the host's debug library through a `Debug` capability, and the `lua-resume-debug` crate creates a state in which only the host can reach that library.
-- **Frame rebuilding (restore) and engine integration: not started.**
+- **Restore: done for coroutines that capture accepts.** `restore::restore(&Lua, &Debug, &Snapshot, &Sources, &Permanents)` rebuilds a suspended coroutine (see below). The round-trip suite saves five scripts at all 20 of their yields, restores each in a fresh Lua state through JSON, and compares the rest of the run with the uninterrupted run.
+- **Engine integration, frames inside `pcall` and `xpcall`, and capture inside numeric `for` bodies: not started.**
 
 ## Normalizing a chunk
 
@@ -117,6 +118,35 @@ Limits of this step:
 - Two different functions with the same chunk name and lines are told apart only by parameter count, vararg flag, upvalue count and the set of lines with code. Functions that match on all of these are not detected.
 - Dead `(temporary)` slots that a vararg callee leaves in its caller's stack are recognized by count and skipped. Any other temporary is refused.
 - A to-be-closed local that holds nil, false or userdata is not detected.
+
+## Restoring a coroutine
+
+```rust
+use lua_resume::restore::{restore, Sources};
+
+let mut sources = Sources::new();
+sources.insert("=game.lua", normalized_tree); // the tree that was loaded under that chunk name
+let snapshot: Snapshot = serde_json::from_str(&json)?;
+let thread = restore(&lua, &debug, &snapshot, &sources, &permanents)?;
+thread.resume::<mlua::MultiValue>(value)?; // continues as the original would have
+```
+
+`restore` rebuilds values first. Tables keep their identity, cycles and metatables. A Lua closure is the function that `Sources` defines at the saved chunk name and lines, and its upvalues are joined (`debug.upvaluejoin`) to one cell per saved cell, so closures that shared an upvalue still share it and writes stay visible. Permanents come from the `Permanents` by name. Coroutines reachable from the stack are restored too.
+
+Each frame then gets a generated continuation (see above) bound to the saved closure's cells, with the saved locals and varargs. The frames are chained from the outermost to the innermost, and the innermost `__lr_next` is the native function the original waited in. The new coroutine is resumed once, so it waits in that function, and the next resume behaves like resuming the original.
+
+The restore registers each continuation in the Lua state as the frame it continues. A later `capture` of the restored coroutine reports the original function, closure, line and locals, so save, restore, save gives equal snapshots. The tests check this at every yield.
+
+`restore` refuses, with an error that says why: a permanent the host did not register, a chunk with no source, a function identity the source does not define, and a function whose lines, upvalue count or upvalue names differ from the saved closure.
+
+Limits of this step:
+
+- A function is found only when it is defined by `function`, `local function`, or as the value of a `local` or assignment. A function written directly as a call argument or table field value is not found and its frames cannot be restored.
+- A new reference in the source to an enclosing local that the save did not record is read as a global. The check compares lines and the upvalue names and count the save recorded.
+- A call with a nested last-argument call, such as `f(a, g())`, has one site, and the continuation takes `g` as the pending call. A coroutine waiting in `f` is continued wrongly.
+- A continuation reports positions in error messages by the lines of its generated source. Re-entered loops can print their body on a later line than the original. Tests raise errors with level 0.
+- Frames inside `pcall` and `xpcall` are not captured yet (capture refuses native frames), so the `PROTECTED_NEXT` path is only reached for errors raised after a restore, not for a restore from inside the protected call.
+- Capture refuses `(for state)` slots, so a coroutine cannot be saved inside a numeric `for` body.
 
 ## License
 

@@ -7,5 +7,6 @@
 pub mod capture;
 pub mod compiled;
 pub mod continuation;
+pub mod restore;
 pub mod rewrite;
 pub mod syntax;
