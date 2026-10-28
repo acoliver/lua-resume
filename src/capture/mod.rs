@@ -17,6 +17,7 @@
 mod debug;
 mod error;
 mod frames;
+mod origins;
 mod path;
 mod permanents;
 mod snapshot;
@@ -34,6 +35,7 @@ use std::collections::HashMap;
 
 use mlua::{Lua, Thread};
 
+pub(crate) use origins::{Origin, register as register_origin};
 use path::Path;
 use values::Work;
 
@@ -71,6 +73,7 @@ struct Capturer<'a> {
     cells: HashMap<usize, usize>,
     threads: HashMap<usize, usize>,
     shapes: HashMap<FunctionId, Shape>,
+    origins: HashMap<usize, Origin>,
     work: Vec<Work>,
 }
 
@@ -93,6 +96,7 @@ impl<'a> Capturer<'a> {
             cells: HashMap::new(),
             threads: HashMap::new(),
             shapes: HashMap::new(),
+            origins: origins::all(lua),
             work: Vec::new(),
         })
     }

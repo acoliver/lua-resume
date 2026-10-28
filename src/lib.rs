@@ -8,6 +8,7 @@ pub mod capture;
 pub mod compiled;
 pub mod continuation;
 pub mod lua53;
+pub mod restore;
 pub mod rewrite;
 pub mod strip;
 pub mod syntax;
