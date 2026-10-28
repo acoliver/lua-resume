@@ -2,8 +2,8 @@
 
 use mlua::{Function, MultiValue, ThreadStatus};
 
-use super::RestoreError;
 use super::build::{Restorer, upvalue_names};
+use super::{RestoreError, Restored};
 use crate::capture::{Callee, Frame, Origin, ThreadData, register_origin};
 use crate::continuation::{ContinuationError, continuation_source};
 
@@ -36,6 +36,23 @@ impl Restorer<'_> {
                 "the snapshot has no suspended coroutine to restore".to_owned(),
             )),
         }
+    }
+
+    /// The named roots and the captured coroutines, in capture order.
+    pub(super) fn restored(&self) -> Result<Restored, RestoreError> {
+        let mut roots = Vec::with_capacity(self.snapshot.roots.len());
+        for (name, value) in &self.snapshot.roots {
+            roots.push((name.clone(), self.to_lua(value)?));
+        }
+        let mut threads = Vec::with_capacity(self.snapshot.captured.len());
+        for index in &self.snapshot.captured {
+            let thread = self
+                .threads
+                .get(*index)
+                .ok_or_else(|| RestoreError::Malformed(format!("no captured coroutine {index}")))?;
+            threads.push(thread.clone());
+        }
+        Ok(Restored { roots, threads })
     }
 
     /// The function that starts the outermost frame.

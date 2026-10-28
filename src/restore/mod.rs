@@ -9,6 +9,8 @@
 //! The new coroutine is resumed once, so it stops in that native function as the original did,
 //! and the next resume with some values behaves like resuming the original with them.
 //!
+//! [`restore_all`] rebuilds the roots and every coroutine of a snapshot from one graph.
+//!
 //! The code comes from [`Sources`], the host's trusted normalized chunks; a snapshot supplies
 //! only data and names. A snapshot that names a function, chunk or permanent the host does
 //! not have, or whose function no longer matches the source, is refused.
@@ -21,9 +23,17 @@ mod sources;
 pub use error::RestoreError;
 pub use sources::Sources;
 
-use mlua::{Function, Lua, Thread};
+use mlua::{Function, Lua, Thread, Value};
 
 use crate::capture::{Debug, Permanents, Snapshot};
+
+/// What [`restore_all`] rebuilt from one snapshot. All of it shares one graph.
+pub struct Restored {
+    /// The named roots, in the order they were captured.
+    pub roots: Vec<(String, Value)>,
+    /// The coroutines that were captured, in the order they were given.
+    pub threads: Vec<Thread>,
+}
 
 /// Restores `snapshot`, whose first thread is the coroutine that was captured.
 pub fn restore(
@@ -33,11 +43,33 @@ pub fn restore(
     sources: &Sources,
     permanents: &Permanents,
 ) -> Result<Thread, RestoreError> {
+    rebuild(lua, debug, snapshot, sources, permanents)?.first_thread()
+}
+
+/// Restores every root and coroutine of `snapshot` once, so tables, closures, upvalue cells
+/// and coroutines shared in the original are shared in the result.
+pub fn restore_all(
+    lua: &Lua,
+    debug: &Debug,
+    snapshot: &Snapshot,
+    sources: &Sources,
+    permanents: &Permanents,
+) -> Result<Restored, RestoreError> {
+    rebuild(lua, debug, snapshot, sources, permanents)?.restored()
+}
+
+fn rebuild<'a>(
+    lua: &'a Lua,
+    debug: &'a Debug,
+    snapshot: &'a Snapshot,
+    sources: &'a Sources,
+    permanents: &'a Permanents,
+) -> Result<build::Restorer<'a>, RestoreError> {
     let mut restorer = build::Restorer::new(lua, debug, snapshot, sources, permanents)?;
     restorer.build_objects()?;
     restorer.fill()?;
     restorer.build_threads()?;
-    restorer.first_thread()
+    Ok(restorer)
 }
 
 /// The functions every restore needs: `maker` builds the `__lr_next` of a frame and `entry`

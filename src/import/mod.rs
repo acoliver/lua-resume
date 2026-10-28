@@ -87,6 +87,8 @@ pub fn import_thread(
         tables: heap.tables.clone(),
         closures: importer.closures.clone(),
         cells: heap.cells.clone(),
+        roots: Vec::new(),
+        captured: vec![0],
     };
     snapshot.threads.extend(heap.threads.iter().cloned());
     let aliased = importer.open_upvalues(&thread, &mut snapshot)?;
