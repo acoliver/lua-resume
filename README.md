@@ -27,7 +27,45 @@ A save file contains only data and names. Code always comes from the game's own 
 Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks the plan.
 
 - **Parser and printer: done.** `syntax::parse` reads Lua 5.4 source into a tree, and `syntax::print` writes a tree back as source that compiles to the same code. Each statement and function keeps its original line, so error messages and `debug.getinfo` report the original lines. The tests compile the original and the printed source with Lua 5.4 and compare the bytecode. Over all 3,387 Lua files that ship with Stranded: Alien Dawn's Mod Tools (927,000 lines), the bytecode is identical for every file. That corpus is not included here; run it with `LUA_RESUME_CORPUS=<dir> cargo test --release -- --ignored`.
-- The rewrite and the runtime are next.
+- **Normalization: done.** `rewrite::normalize(&Block, &Compiled)` stages explicit calls and their operands, preserves short-circuiting, rewrites loop conditions and generic iterators, and adds function-local call-site markers. Differential tests compare values, call traces, errors and coroutine yields on stock Lua 5.4. The original compiler's table-read decisions are required input, as described below.
+- Saving and restoring suspended frames, continuation generation and engine integration are next.
+
+## Normalizing a chunk
+
+Compile the original source with stock Lua 5.4 before rewriting it. The host obtains its dump through the public Lua `string.dump` API or mlua's equivalent `Function::dump`, then passes the parsed analysis to the normalizer. The crate has no runtime dependency on mlua; a caller can supply dump bytes from its own Lua host.
+
+```rust
+use lua_resume::{compiled::Compiled, rewrite::normalize, syntax::{parse, print}};
+use mlua::{ChunkMode, Lua};
+
+fn load(lua: &Lua, source: &str) -> Result<mlua::Function, Box<dyn std::error::Error>> {
+    let tree = parse(source.as_bytes())?;
+    let dump = lua.load(source)
+        .set_mode(ChunkMode::Text)
+        .set_name("=game")
+        .into_function()?
+        .dump(true);
+    let compiled = Compiled::from_dump(&dump)?;
+    let normalized = normalize(&tree, &compiled)?;
+    Ok(lua.load(print(&normalized))
+        .set_mode(ChunkMode::Text)
+        .set_name("=game")
+        .into_function()?)
+}
+```
+
+Lua sometimes reads an assignment's table before its right-hand side and sometimes keeps it as a late upvalue read. For short string keys, this depends on whether the original constant index fits an 8-bit operand. Normalization changes the constant layout, so source syntax alone cannot determine the original read point.
+
+`Compiled::from_dump` reads each function's table-store instructions. The normalizer traverses the original AST in source compilation order, including constructor stores, implicit globals and reverse-order multiple-assignment stores. It maps each assignment occurrence to its compiler decision and verifies the store count independently in every function. Nested prototypes are matched by definition order and `linedefined`. A count or prototype-line mismatch is an error. This also handles numeric keys and keys folded from `<const>` locals without guessing from their spelling.
+
+The caller must supply a dump of exactly the same original chunk as the AST. Count and line validation detect mapping inconsistencies; they do not authenticate the source. Analysis is discarded after loading. Bytecode never goes in save data.
+
+### Constraints
+
+- The dump reader supports the official Lua 5.4 format with 32-bit instructions, little-endian 64-bit integers and IEEE 64-bit numbers. Stripped and debug dumps are accepted. Custom compiler formats are unsupported.
+- Names beginning with `__lr` are reserved for generated locals. Normalization reports insufficient local capacity. Large expressions use private spill storage.
+- The pass exposes explicit calls. Implicit metamethod suspension, garbage-collector observations and debug-library observations of generated locals are outside its contract. Operand errors can name a generated temporary.
+- Corpus checks establish normal form and compilation. They do not execute the game's scripts or prove runtime equivalence over the corpus.
 
 ## License
 
