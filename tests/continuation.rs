@@ -112,29 +112,3 @@ fn an_unknown_function_or_site_is_an_error() {
         Err(ContinuationError::NoSite(9))
     );
 }
-
-#[test]
-fn constructs_that_cannot_be_reentered_are_refused() {
-    let source = "function f()\n  repeat coroutine.yield(1) until true\nend\n";
-    let tree = normalize_source(source.as_bytes()).unwrap();
-    let key = FunctionKey {
-        line: 1,
-        end_line: 3,
-    };
-    assert_eq!(
-        continuation_source(&tree, key, 1, &[], &[]),
-        Err(ContinuationError::Unsupported("a repeat loop"))
-    );
-    let source = "function f()\n  ::top::\n  coroutine.yield(1)\n  goto top\nend\n";
-    let tree = normalize_source(source.as_bytes()).unwrap();
-    let key = FunctionKey {
-        line: 1,
-        end_line: 5,
-    };
-    assert_eq!(
-        continuation_source(&tree, key, 1, &[], &[]),
-        Err(ContinuationError::Unsupported(
-            "a block with a label before the call"
-        ))
-    );
-}

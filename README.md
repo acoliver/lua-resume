@@ -28,7 +28,7 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 
 - **Parser and printer: done.** `syntax::parse` reads Lua 5.4 source into a tree, and `syntax::print` writes a tree back as source that compiles to the same code. Each statement and function keeps its original line, so error messages and `debug.getinfo` report the original lines. The tests compile the original and the printed source with Lua 5.4 and compare the bytecode. Over all 3,387 Lua files that ship with Stranded: Alien Dawn's Mod Tools (927,000 lines), the bytecode is identical for every file. That corpus is not included here; run it with `LUA_RESUME_CORPUS=<dir> cargo test --release -- --ignored`.
 - **Normalization: done.** `rewrite::normalize(&Block, &Compiled)` stages explicit calls and their operands, preserves short-circuiting, rewrites loop conditions and generic iterators, and adds function-local call-site markers. Differential tests compare values, call traces, errors and coroutine yields on stock Lua 5.4. The original compiler's table-read decisions are required input, as described below.
-- **Continuation generation: partly done.** `continuation::continuation_source` generates, from a normalized chunk, the function that finishes a frame from one call site (see below).
+- **Continuation generation: done for the shapes in old Stranded saves, except backward gotos.** `continuation::continuation_source` generates, from a normalized chunk, the function that finishes a frame from one call site (see below).
 - **Capture of suspended coroutines, value snapshots, frame rebuilding and engine integration: not started.** Capture needs the Lua `debug` library. mlua loads it only through `unsafe`, and this crate forbids unsafe code, so the runtime API will take the host's debug functions as an argument.
 
 ## Normalizing a chunk
@@ -70,10 +70,19 @@ The caller must supply a dump of exactly the same original chunk as the AST. Cou
 
 ## Continuations
 
-`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing `do`, `if` and `while` blocks (which covers generic `for` after normalization) and continues after the call statement of `site`. The call's results come from `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, and only functions defined by `function`, `local function`, or as the value of a `local` or assignment are found.
+`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing blocks and continues after the call of `site`. The pending call is replaced by `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, and only functions defined by `function`, `local function`, or as the value of a `local` or assignment are found.
 
-Supported call statements are a plain call, `local names = call` and `names = call`. Refused with an error: sites inside `repeat`, numeric `for`, or a block with a label before the site, and other statement forms.
+Supported:
 
-## License
+- Enclosing `do`, `if`, `while`, `repeat` and numeric `for` blocks. Generic `for` is a `while` after normalization, so `ipairs`, `pairs` and `next` loops continue with their saved iterator state. A `repeat` condition sees the body locals.
+- Site statements that are a call, a `local` or an assignment with the call anywhere in a chain such as `f(a, g())`, or a `return` (including tail calls `return f(...)` and several results). Field stores such as `t.x = f()` are normalized into a temporary, so their site is a plain assignment.
+- Vararg functions: the continuation takes the saved varargs as its `...`.
+- Numeric `for`: normalization keeps the limit and step in locals and the loop variable's value at the start of each iteration in a body local. The continuation restarts the loop at that saved value with the same limit and step. Lua derives the remaining iteration count from those three values, so integer and float loops run the iterations that were left. The first iteration runs the rest of the body, with the loop variable the frame saved.
+- `goto continue` labels after the site.
+- Frames suspended in `pcall(f, ...)` or `xpcall(f, h, ...)`. The site of the outer frame is the `pcall` call. The host builds that frame's `__lr_next` with `PROTECTED_NEXT`, which runs the continuation of the next frame inside a new `pcall` or `xpcall`, so an error raised after the restore is caught as in the original run.
+
+Refused with an error that names the construct: a `goto` at or after the site to a label before it, a site statement of another kind, a statement with several pending calls, and loops that were not normalized.
+
+## ## License
 
 MIT.
