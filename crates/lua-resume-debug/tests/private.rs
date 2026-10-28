@@ -1,0 +1,44 @@
+//! Scripts cannot reach the debug library; the host can.
+
+use lua_resume_debug::new_lua_with_private_debug;
+use mlua::{Function, LuaOptions, StdLib, Table, Value};
+
+fn state() -> (mlua::Lua, Table) {
+    new_lua_with_private_debug(StdLib::ALL_SAFE, LuaOptions::default()).unwrap()
+}
+
+#[test]
+fn scripts_find_no_debug_library() {
+    let (lua, _) = state();
+    let found: Vec<bool> = lua
+        .load(
+            "return {debug == nil, package.loaded.debug == nil, rawget(_G, 'debug') == nil, \
+             (select(1, pcall(require, 'debug'))) == false}",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(found, [true, true, true, true]);
+}
+
+#[test]
+fn the_host_receives_a_working_debug_table() {
+    let (lua, debug) = state();
+    let getinfo: Function = debug.get("getinfo").unwrap();
+    let probe: Function = lua.load("return function() end").eval().unwrap();
+    let info: Table = getinfo.call((probe, "S")).unwrap();
+    assert_eq!(info.get::<String>("what").unwrap(), "Lua");
+}
+
+#[test]
+fn other_libraries_stay_available() {
+    let (lua, _) = state();
+    let value: Value = lua.load("return string.rep('a', 2)").eval().unwrap();
+    assert_eq!(value.as_str().unwrap(), "aa");
+}
+
+#[test]
+fn a_state_without_the_package_library_still_works() {
+    let (lua, debug) = new_lua_with_private_debug(StdLib::STRING, LuaOptions::default()).unwrap();
+    assert!(lua.globals().get::<Value>("debug").unwrap().is_nil());
+    assert!(debug.contains_key("getlocal").unwrap());
+}
