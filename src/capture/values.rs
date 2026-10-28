@@ -84,7 +84,15 @@ impl Capturer<'_> {
             Lua::Table(table) => Value::Table(self.table_id(table, path)),
             Lua::Function(function) => self.function_value(function, path)?,
             Lua::Thread(thread) => Value::Thread(self.thread_id(thread, path)),
-            Lua::UserData(_) | Lua::LightUserData(_) => {
+            Lua::LightUserData(light) => match self.permanents.light_handle(*light) {
+                Some(handle) => Value::LightUserData(handle),
+                None => {
+                    return Err(CaptureError::Userdata {
+                        path: path.render(),
+                    });
+                }
+            },
+            Lua::UserData(_) => {
                 return Err(CaptureError::Userdata {
                     path: path.render(),
                 });

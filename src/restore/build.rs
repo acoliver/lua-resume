@@ -171,6 +171,11 @@ impl<'a> Restorer<'a> {
                     .clone(),
             ),
             Value::Permanent(name) => self.permanent(name)?,
+            Value::LightUserData(handle) => Lua_::LightUserData(
+                self.permanents
+                    .light(*handle)
+                    .ok_or(RestoreError::MissingLightUserData(*handle))?,
+            ),
         })
     }
 

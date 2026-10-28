@@ -8,12 +8,12 @@ use import_support::{
     CHUNK, Extra, Host, SAVED_SOURCE, SOURCE, World, int, line_of, string, yield_fn,
 };
 use lua_resume::capture::Permanents;
-use lua_resume::capture::{TableData, Value};
+use lua_resume::capture::{Callee, SharedLocal, Snapshot, TableData, Value};
 use lua_resume::import::{ImportChunk, ImportError, ImportSources, PermanentMap, import_thread};
 use lua_resume::restore::{restore, restore_all};
 use lua_resume::strip::strip_debug_calls;
 use lua_resume::syntax::parse;
-use mlua::{Function, Thread};
+use mlua::{Function, LightUserData, Thread};
 
 fn host() -> Host {
     Host::new(SOURCE)
@@ -47,12 +47,15 @@ fn uninterrupted(name: &str, args: &str, inputs: &[&str]) -> Vec<String> {
 
 /// Imports `world`, restores it in a fresh state and feeds it `inputs` from yield `at`.
 fn resumed(world: &World, name: &str, args: &str, inputs: &[&str], at: usize) {
+    resumed_in(&host(), world, name, args, inputs, at);
+}
+
+fn resumed_in(fresh: &Host, world: &World, name: &str, args: &str, inputs: &[&str], at: usize) {
     let expected = uninterrupted(name, args, inputs);
-    let fresh = host();
     let imported = import_thread(
         &world.thread,
         &world.heap,
-        &sources(&fresh),
+        &sources(fresh),
         &fresh.permanents,
         &PermanentMap::default(),
     )
@@ -61,7 +64,7 @@ fn resumed(world: &World, name: &str, args: &str, inputs: &[&str], at: usize) {
         &fresh.lua,
         &fresh.debug,
         &imported.snapshot,
-        &sources(&fresh).restore_sources(),
+        &sources(fresh).restore_sources(),
         &fresh.permanents,
     )
     .unwrap();
@@ -210,26 +213,136 @@ fn a_yieldable_pcall_becomes_a_protected_frame() {
     resumed(&world, "protected", "6", &["20"], 0);
 }
 
-#[test]
-fn an_open_upvalue_gives_its_closure_the_slot_value() {
+/// A frame of `function` stopped at its yield with `count` open as an upvalue of the nested
+/// function `closure`. Returns the world and the cell of the upvalue.
+fn counter_world(function: &str, closure: &str) -> (World, usize) {
     let mut world = World::new();
     let count_cell = world.cell(Value::Nil);
-    let bump = world.closure(line_of("bump"), &[("count", count_cell)]);
-    let upv = world.closure(line_of("upv"), &[]);
-    let registers = [int(10), int(10), Value::Closure(bump)];
-    let base = world.frame(upv, 0, &registers, yield_fn());
+    let nested = world.closure(line_of(closure), &[("count", count_cell)]);
+    let outer = world.closure(line_of(function), &[]);
+    let registers = [int(10), int(10), Value::Closure(nested)];
+    let base = world.frame(outer, 0, &registers, yield_fn());
     world.yielded();
     world.thread.open_upvalues.push((base + 1, count_cell));
-    let imported = import_thread(
+    (world, count_cell)
+}
+
+fn imported(world: &World) -> Snapshot {
+    import_thread(
         &world.thread,
         &world.heap,
         &sources(&host()),
         &host().permanents,
         &PermanentMap::default(),
     )
-    .unwrap();
-    assert_eq!(imported.aliased, [(0, "count".to_owned())]);
+    .unwrap()
+    .snapshot
+}
+
+#[test]
+fn an_open_upvalue_is_listed_as_a_local_shared_with_its_cell() {
+    let (world, cell) = counter_world("upv", "bump");
+    let snapshot = imported(&world);
+    let frame = &snapshot.frames()[0];
+    let count = frame
+        .locals
+        .iter()
+        .position(|local| local.name == "count")
+        .unwrap();
+    assert_eq!(frame.shared, [SharedLocal { local: count, cell }]);
+    assert_eq!(snapshot.cells[cell].value, int(10));
     resumed(&world, "upv", "10", &["5"], 0);
+}
+
+#[test]
+fn writes_through_the_closure_and_the_local_reach_each_other_after_the_restore() {
+    let (world, _) = counter_world("share", "raise");
+    // The local reads 11 after raise() and 21 after it adds 10; raise() then makes it 22. A
+    // frame that kept its own copy of the local would end with 21 and 11.
+    resumed(&world, "share", "10", &["5"], 0);
+    let fresh = host();
+    let thread = {
+        let snapshot = imported(&world);
+        restore(
+            &fresh.lua,
+            &fresh.debug,
+            &snapshot,
+            &sources(&fresh).restore_sources(),
+            &fresh.permanents,
+        )
+        .unwrap()
+    };
+    assert_eq!(fresh.step(&thread, "5"), "return:11,22,5");
+}
+
+#[test]
+fn a_generic_for_stopped_in_a_lua_iterator_resumes_in_both_frames() {
+    let mut world = World::new();
+    let ticker = world.closure(line_of("ticker"), &[]);
+    let ticks = world.closure(line_of("ticks"), &[]);
+    // `for i in ticker, 3, 0` in its second iteration: sum is 1 and ticker(3, 1) is running.
+    let registers = [int(3), int(1), Value::Closure(ticker), int(3), int(1)];
+    world.frame(ticks, 0, &registers, Value::Closure(ticker));
+    world.frame(ticker, 0, &[int(3), int(1)], yield_fn());
+    world.yielded();
+    let snapshot = imported(&world);
+    assert_eq!(snapshot.frames().len(), 2);
+    assert!(matches!(snapshot.frames()[0].pending, Callee::Lua(_)));
+    resumed(&world, "ticks", "3", &["a", "b", "c", "d"], 1);
+}
+
+#[test]
+fn a_light_userdata_is_imported_when_the_host_registered_its_handle() {
+    let mut world = World::new();
+    let tailer = world.closure(line_of("tailer"), &[]);
+    world.frame(tailer, 0, &[Value::LightUserData(5)], yield_fn());
+    world.yielded();
+    let error = refused(&world, &host().permanents);
+    assert!(
+        matches!(error, ImportError::MissingPermanent { ref name, .. } if name == "light userdata 5"),
+        "{error}"
+    );
+    let mut known = host().permanents;
+    known
+        .insert_light(5, LightUserData(std::ptr::without_provenance_mut(0x40)))
+        .unwrap();
+    let snapshot = import_thread(
+        &world.thread,
+        &world.heap,
+        &sources(&host()),
+        &known,
+        &PermanentMap::default(),
+    )
+    .unwrap()
+    .snapshot;
+    let x = snapshot.frames()[0]
+        .locals
+        .iter()
+        .find(|local| local.name == "x");
+    assert_eq!(x.unwrap().value, Value::LightUserData(5));
+}
+
+#[test]
+fn a_legacy_label_for_a_native_resolves_through_an_alias() {
+    let mut world = World::new();
+    let tailer = world.closure(line_of("tailer"), &[]);
+    world.frame(
+        tailer,
+        0,
+        &[int(4)],
+        Value::Permanent("legacy yield".to_owned()),
+    );
+    world.yielded();
+    assert!(matches!(
+        refused(&world, &host().permanents),
+        ImportError::MissingPermanent { .. }
+    ));
+    let mut fresh = host();
+    fresh
+        .permanents
+        .alias("legacy yield", "coroutine.yield")
+        .unwrap();
+    resumed_in(&fresh, &world, "tailer", "4", &["8"], 0);
 }
 
 fn refused(world: &World, permanents: &Permanents) -> ImportError {

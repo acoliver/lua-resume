@@ -42,8 +42,11 @@ pub enum Value {
     Closure(usize),
     /// An index into [`Snapshot::threads`].
     Thread(usize),
-    /// A value the host named in its permanents, such as a native function.
+    /// A value the host named in its permanents, such as a native function or a userdata.
     Permanent(String),
+    /// A light userdata, by the handle the host registered it under with
+    /// [`Permanents::insert_light`](super::Permanents::insert_light).
+    LightUserData(u64),
 }
 
 impl Value {
