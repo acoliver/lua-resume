@@ -9,6 +9,8 @@ pub enum RestoreError {
     Lua(#[from] mlua::Error),
     #[error("the permanent `{0}` is not registered")]
     MissingPermanent(String),
+    #[error("the light userdata with handle {0} is not registered")]
+    MissingLightUserData(u64),
     #[error("no source for chunk `{0}`")]
     UnknownChunk(String),
     #[error("no function defined at {chunk}:{line}-{end_line}")]

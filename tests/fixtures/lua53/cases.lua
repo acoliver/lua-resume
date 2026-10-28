@@ -48,3 +48,28 @@ function temps(t)
   local r = t:get(coroutine.yield('x'))
   return r
 end
+function share(n)
+  local count = n
+  local function raise()
+    count = count + 1
+  end
+  local got = coroutine.yield('share', count)
+  raise()
+  local seen = count
+  count = count + 10
+  raise()
+  return seen, count, got
+end
+function ticker(limit, i)
+  local got = coroutine.yield('tick', i)
+  if i < limit then
+    return i + 1
+  end
+end
+function ticks(limit)
+  local sum = 0
+  for i in ticker, limit, 0 do
+    sum = sum + i
+  end
+  return sum
+end

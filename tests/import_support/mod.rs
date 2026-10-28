@@ -7,7 +7,7 @@ mod normalizer;
 use lua_resume::capture::{Cell, Debug, Permanents, Value};
 use lua_resume::import::{SavedClosure, SavedFrame, SavedHeap, SavedThread, status};
 use lua_resume::lua53::chunk::read_chunk;
-use lua_resume::lua53::op::{call_kind, register_a};
+use lua_resume::lua53::op::{CallKind, call_kind, register_a};
 use lua_resume::syntax::ast::Block;
 use lua_resume::syntax::print;
 use lua_resume_debug::new_lua_with_private_debug;
@@ -188,7 +188,13 @@ impl World {
             .nth(ordinal)
             .map(|(pc, _)| pc)
             .expect("the ordinal names a call");
-        let window = usize::from(register_a(proto.code[pc]));
+        // A generic `for` calls a copy placed after its three hidden registers.
+        let hidden = if call_kind(proto.code[pc]) == Some(CallKind::IterCall) {
+            3
+        } else {
+            0
+        };
+        let window = usize::from(register_a(proto.code[pc])) + hidden;
         assert_eq!(registers.len(), window, "registers below the callee");
         self.thread.stack.extend(registers.iter().cloned());
         self.thread.stack.push(callee);

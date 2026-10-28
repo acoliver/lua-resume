@@ -14,7 +14,8 @@ Regeneration: build a minimal `luac` against the Lua 5.3.6 sources vendored in t
     luac53 @Lua/sample.lua sample.stripped.lua sample.luac
 
 `cases.lua` holds one small function per frame shape the import tests rebuild (nested call, numeric `for`,
-`ipairs` loop, vararg function, tail call, `pcall`, open upvalue, temporaries). It has no `assert` or `dbg`
+`ipairs` loop, vararg function, tail call, `pcall`, open upvalue, temporaries, an open upvalue read after
+the closure writes it, and a generic `for` stopped in a Lua iterator). It has no `assert` or `dbg`
 statements. `cases.luac` is its stock Lua 5.3.6 compile with chunk name `@Lua/cases.lua`, made with the same
 `luac53` driver:
 
