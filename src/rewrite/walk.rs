@@ -20,7 +20,7 @@ pub(super) fn children(expr: &Expr) -> Vec<&Expr> {
 }
 
 /// Calls in this expression, excluding bodies of functions it defines.
-pub(super) fn has_call(expr: &Expr) -> bool {
+pub(crate) fn has_call(expr: &Expr) -> bool {
     matches!(expr, Expr::Call(_)) || children(expr).into_iter().any(has_call)
 }
 

@@ -1,0 +1,104 @@
+//! Generates the continuation of a normalized function at one of its call sites.
+//!
+//! A continuation is a Lua function that declares the frame's saved locals, assigns them from
+//! a table, re-enters the loops and branches that enclose the call statement and continues
+//! right after it. The results of the call come from `__lr_next()`: the next inner frame, or
+//! the `coroutine.yield` the innermost frame was waiting in.
+//!
+//! The generated chunk is `local <upvalues> return function(__lr_v, __lr_next, __lr_unpack, ...)`.
+//! `__lr_v` is a table of the saved local values in declaration order, `__lr_unpack` is
+//! `table.unpack` and `...` are the frame's saved varargs. The host assigns the upvalues.
+//!
+//! Supported enclosing constructs are `do`, `if`, `while` (which includes generic `for` after
+//! normalization), `repeat` and numeric `for`. The site statement is a call, a `local` or an
+//! assignment whose call is replaced by `__lr_next()` wherever it sits in the statement, or a
+//! `return`. Labels before the site in an enclosing block are kept and entered with a `goto`.
+//! Anything else is refused with an error that names the construct.
+//!
+//! A frame suspended in `pcall(f, ...)` has the `pcall` call as its site. The host builds the
+//! `__lr_next` of that frame with [`PROTECTED_NEXT`], so the continuation of `f` runs inside a
+//! new `pcall` and an error raised after the restore is caught like the original.
+
+mod loops;
+mod path;
+mod resume;
+mod site;
+
+use crate::syntax::ast::{Block, Stat};
+use crate::syntax::{parse, print};
+use path::{find_function, find_site};
+
+/// Why a continuation cannot be generated.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ContinuationError {
+    #[error("no function defined at lines {0} to {1}")]
+    NoFunction(u32, u32),
+    #[error("the function has no call site {0}")]
+    NoSite(u32),
+    #[error("cannot resume inside {0}")]
+    Unsupported(&'static str),
+}
+
+/// The function a continuation is for, by the lines its definition spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionKey {
+    pub line: u32,
+    pub end_line: u32,
+}
+
+/// Generates the chunk source of the continuation of `function` at call site `site`.
+/// `locals` are the names of the saved locals and `upvalues` those of the function.
+pub fn continuation_source(
+    chunk: &Block,
+    function: FunctionKey,
+    site: u32,
+    locals: &[String],
+    upvalues: &[String],
+) -> Result<String, ContinuationError> {
+    let body = find_function(chunk, function).ok_or(ContinuationError::NoFunction(
+        function.line,
+        function.end_line,
+    ))?;
+    let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
+    let mut stats = Vec::new();
+    if !locals.is_empty() {
+        let names = locals.join(", ");
+        stats.extend(snippet(&format!(
+            "local {names} = __lr_unpack(__lr_v, 1, {})",
+            locals.len()
+        )));
+    }
+    let rest = resume::resume_block(&body.body, &steps, 0)?;
+    stats.extend(rest.stats);
+    let block = Block {
+        stats,
+        ret: rest.ret,
+    };
+    let declared = if upvalues.is_empty() {
+        String::new()
+    } else {
+        format!("local {} ", upvalues.join(", "))
+    };
+    Ok(format!(
+        "{declared}return function(__lr_v, __lr_next, __lr_unpack, ...) {} end",
+        print(&block)
+    ))
+}
+
+/// Chunk source that evaluates to `function(inner, handler)`. It returns the `__lr_next` of a
+/// frame suspended in `pcall(f, ...)`, or in `xpcall(f, handler, ...)` when `handler` is given.
+/// `inner` is the continuation of the next frame, already applied to its own arguments.
+pub const PROTECTED_NEXT: &str = "local pcall, xpcall = pcall, xpcall \
+    return function(inner, handler) \
+      return function() \
+        if handler then return xpcall(inner, handler) end \
+        return pcall(inner) \
+      end \
+    end";
+
+/// The statements of a snippet. The snippet is trusted generated text.
+pub(super) fn snippet(text: &str) -> Vec<Stat> {
+    parse(text.as_bytes())
+        .expect("generated snippet parses")
+        .stats
+}

@@ -162,6 +162,12 @@ impl Func {
         ["f", "s", "c", "x"].map(|part| format!("{TEMP_PREFIX}_{part}{}", self.loops))
     }
 
+    /// Names for the limit, the step and the control value of a rewritten numeric `for` loop.
+    pub(super) fn numeric_names(&mut self) -> [Name; 3] {
+        self.loops += 1;
+        ["l", "s", "c"].map(|part| format!("{TEMP_PREFIX}_n{part}{}", self.loops))
+    }
+
     /// `name = value` on the current line.
     pub(super) fn assign(&self, name: &str, value: Expr) -> Stat {
         Stat {
