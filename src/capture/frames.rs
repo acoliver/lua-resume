@@ -21,24 +21,32 @@ type Found = (i64, String, mlua::Value, Path);
 
 /// Keeps, for each name the restored frame was built with, the last as many copies as the
 /// frame declared, in the order of `saved`. A re-entered loop declares the loop variable and
-/// body locals again, and the code that runs reads the copy declared last.
+/// body locals again, and the code that runs reads the copy declared last. Locals with other
+/// names were declared by the original code after the restored site, such as the limit and
+/// step of a later loop, and follow in stack order.
 fn live_copies(found: Vec<Found>, saved: &[String]) -> Vec<Found> {
     let mut wanted: HashMap<&str, usize> = HashMap::new();
     for name in saved {
         *wanted.entry(name).or_default() += 1;
     }
     let mut queues: HashMap<String, VecDeque<Found>> = HashMap::new();
+    let mut later = Vec::new();
     for entry in found.into_iter().rev() {
-        let left = wanted.get(entry.1.as_str()).copied().unwrap_or(0);
+        let Some(&left) = wanted.get(entry.1.as_str()) else {
+            later.push(entry);
+            continue;
+        };
         let queue = queues.entry(entry.1.clone()).or_default();
         if queue.len() < left {
             queue.push_front(entry);
         }
     }
-    saved
+    let mut kept: Vec<Found> = saved
         .iter()
         .filter_map(|name| queues.get_mut(name).and_then(VecDeque::pop_front))
-        .collect()
+        .collect();
+    kept.extend(later.into_iter().rev());
+    kept
 }
 
 impl Capturer<'_> {
