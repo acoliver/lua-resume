@@ -49,7 +49,7 @@ fn uninterrupted() -> Vec<i64> {
 fn resumed(saved: [i64; 3], site: u32, inputs: &[i64]) -> Vec<i64> {
     let lua = Lua::new();
     lua.load(print(&normalized())).exec().unwrap();
-    let source = continuation_source(&normalized(), KEY, site, &names(&LOCALS), &[]).unwrap();
+    let source = continuation_source(&normalized(), KEY, site, &names(&LOCALS), &[], &[]).unwrap();
     let continuation: Function = lua.load(&source).eval().unwrap();
     let values = lua.create_table().unwrap();
     for (index, value) in [
@@ -104,11 +104,11 @@ fn an_unknown_function_or_site_is_an_error() {
         end_line: 5,
     };
     assert_eq!(
-        continuation_source(&tree, other, 1, &[], &[]),
+        continuation_source(&tree, other, 1, &[], &[], &[]),
         Err(ContinuationError::NoFunction(4, 5))
     );
     assert_eq!(
-        continuation_source(&tree, KEY, 9, &[], &[]),
+        continuation_source(&tree, KEY, 9, &[], &[], &[]),
         Err(ContinuationError::NoSite(9))
     );
 }

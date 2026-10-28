@@ -32,7 +32,8 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 - **Capture of suspended coroutines and the snapshot model: done.** `capture::capture` reads a coroutine suspended in normalized code into a serializable `Snapshot` (see below). It uses the host's debug library through a `Debug` capability, and the `lua-resume-debug` crate creates a state in which only the host can reach that library.
 - **Restore: done for coroutines that capture accepts.** `restore::restore(&Lua, &Debug, &Snapshot, &Sources, &Permanents)` rebuilds a suspended coroutine (see below). The round-trip suite saves five scripts at all 20 of their yields, restores each in a fresh Lua state through JSON, and compares the rest of the run with the uninterrupted run.
 - **Import of Lua 5.3 saved threads: done for statement-level calls.** `import::import_thread` turns a host-decoded Lua 5.3 thread (stack, `CallInfo` records, open upvalues, closures, prototypes) into a `Snapshot` that `restore` accepts: function identity and call site from the prototype and call ordinal, locals by name, varargs, numeric and generic `for` registers, tail calls, `__sprocall` frames as `pcall` frames, and the yielding native at the top. Frames with temporaries below the callee, unknown prototypes, native frames in the middle and unregistered permanents are refused with the frame number. An open upvalue gives its cell the slot's value; the frame's own local stays a separate copy, listed in `Imported::aliased`. `tests/import_cases.rs` rebuilds the 5.3 stack for each shape, restores it in a fresh 5.4 state and compares the rest of the run with the uninterrupted run.
-- **Engine integration, frames inside `pcall` and `xpcall`, and capture inside numeric `for` bodies: not started.**
+- **Frame fidelity: anonymous functions in any position, yields inside numeric `for` bodies and locals shared with closures: done for capture and restore.** A frame local that a closure captured is found at capture by assigning a unique table to the local and searching the upvalue cells of the captured closures for it, and a restore joins those closures to the local again. The import of Lua 5.3 saves still copies open upvalues.
+- **Engine integration and frames inside `pcall` and `xpcall`: not started.**
 
 ## Normalizing a chunk
 
@@ -73,7 +74,7 @@ The caller must supply a dump of exactly the same original chunk as the AST. Cou
 
 ## Continuations
 
-`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing blocks and continues after the call of `site`. The pending call is replaced by `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, and only functions defined by `function`, `local function`, or as the value of a `local` or assignment are found.
+`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing blocks and continues after the call of `site`. The pending call is replaced by `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, wherever they are written: call arguments, table fields, returned values, method definitions and nested functions. Two functions that share both their first and last line are refused as ambiguous.
 
 Supported:
 
@@ -112,7 +113,7 @@ Values are data:
 - Coroutines reachable from the stack are captured too, once each. A finished one is recorded as dead. One suspended outside normalized code is refused.
 - A value found in the `Permanents` (native functions, library tables, `_G`, named userdata) is saved by its name and not entered.
 
-Capture refuses, with an error that names the path to the value (for example ``thread > level 2 > local `box` > ["inner"] > [1]``): a coroutine that is not suspended, a top frame that is not a named yield, a native frame below the top, a frame without an integer `__lrs`, unnamed stack values (`(for state)` and other temporaries), native functions and userdata that are not permanents, stripped functions, and different functions that share a chunk name, lines and shape. Lua keeps no record of `<close>` that the debug library can read, so a local holding a table with a `__close` metamethod is refused as a possible to-be-closed variable.
+Capture refuses, with an error that names the path to the value (for example ``thread > level 2 > local `box` > ["inner"] > [1]``): a coroutine that is not suspended, a top frame that is not a named yield, a native frame below the top, a frame without an integer `__lrs`, unnamed stack values (temporaries; the `(for state)` slots of a numeric `for` are skipped because the normalized loop keeps its limit, step and control in named locals), native functions and userdata that are not permanents, stripped functions, and different functions that share a chunk name, lines and shape. Lua keeps no record of `<close>` that the debug library can read, so a local holding a table with a `__close` metamethod is refused as a possible to-be-closed variable.
 
 Limits of this step:
 
@@ -142,12 +143,11 @@ The restore registers each continuation in the Lua state as the frame it continu
 
 Limits of this step:
 
-- A function is found only when it is defined by `function`, `local function`, or as the value of a `local` or assignment. A function written directly as a call argument or table field value is not found and its frames cannot be restored.
+- Two functions that start and end on the same lines cannot be told apart and are refused. The debug library reports no more than those two lines.
 - A new reference in the source to an enclosing local that the save did not record is read as a global. The check compares lines and the upvalue names and count the save recorded.
 - A call with a nested last-argument call, such as `f(a, g())`, has one site, and the continuation takes `g` as the pending call. A coroutine waiting in `f` is continued wrongly.
 - A continuation reports positions in error messages by the lines of its generated source. Re-entered loops can print their body on a later line than the original. Tests raise errors with level 0.
 - Frames inside `pcall` and `xpcall` are not captured yet (capture refuses native frames), so the `PROTECTED_NEXT` path is only reached for errors raised after a restore, not for a restore from inside the protected call.
-- Capture refuses `(for state)` slots, so a coroutine cannot be saved inside a numeric `for` body.
 
 ## License
 

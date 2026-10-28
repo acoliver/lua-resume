@@ -125,6 +125,7 @@ impl Importer<'_> {
             varargs: mapped.shape.varargs,
             // Replaced by the caller once it has looked at the callee.
             pending: Callee::Native(String::new()),
+            shared: Vec::new(),
         };
         Ok((frame, slot))
     }

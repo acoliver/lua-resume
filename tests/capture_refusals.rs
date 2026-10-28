@@ -93,16 +93,16 @@ fn unnamed_stack_values_are_refused() {
     let host = host();
     raw(
         &host,
-        "function f() for i = 1, 3 do coroutine.yield(i) end end",
-        "loop.lua",
+        "function f() local t = {1, coroutine.yield(2)} return t end",
+        "temporary.lua",
     );
     let error = refused(&host, &host.started("f", ()));
     let CaptureError::Unnamed { path, name } = error else {
         panic!("unexpected {error}");
     };
-    assert_eq!(name, "(for state)");
+    assert_eq!(name, "(temporary)");
     assert!(
-        path.starts_with("thread > level 1 > local `(for state)`"),
+        path.starts_with("thread > level 1 > local `(temporary)`"),
         "{path}"
     );
 }

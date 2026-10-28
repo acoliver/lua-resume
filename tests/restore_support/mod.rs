@@ -134,3 +134,69 @@ pub fn run(script: &Script, stop: Option<usize>) -> (Host, Thread, Run) {
 }
 
 pub mod scripts;
+
+/// Continues `thread` in `host` through the remaining inputs from yield `from`.
+fn finish(host: &Host, thread: &mlua::Thread, script: &Script, from: usize) -> Vec<String> {
+    let mut events = Vec::new();
+    let mut index = from;
+    loop {
+        events.push(host.step(thread, script.inputs[index]));
+        if !events.last().unwrap().starts_with("yield:") {
+            return events;
+        }
+        index += 1;
+    }
+}
+
+fn fresh_host(script: &Script, globals: &str) -> Host {
+    let host = Host::new(script.source);
+    host.lua.load(globals).exec().unwrap();
+    host
+}
+
+/// Round-trips yield `index`; returns nothing but panics on any difference.
+fn round_trip(script: &Script, index: usize, expected: &Run) {
+    let (before, thread, run) = run(script, Some(index));
+    assert_eq!(run.events[..], expected.events[..=index], "{}", script.name);
+    let globals = before.dump_globals();
+    let first = through_json(&before.capture(&thread));
+
+    let second_host = fresh_host(script, &globals);
+    let restored = second_host.restore(&first).unwrap();
+    let again = through_json(&second_host.capture(&restored));
+    assert_eq!(again, first, "{}: re-capture at yield {index}", script.name);
+
+    let rest = finish(&second_host, &restored, script, index);
+    let label = format!("{}: restored at yield {index}", script.name);
+    assert_eq!(rest[..], expected.events[index + 1..], "{label}");
+    assert_eq!(second_host.state(), expected.state, "{label}: globals");
+
+    let third_host = fresh_host(script, &globals);
+    let twice = third_host.restore(&again).unwrap();
+    let rest = finish(&third_host, &twice, script, index);
+    assert_eq!(
+        rest[..],
+        expected.events[index + 1..],
+        "{label}, restored twice"
+    );
+    assert_eq!(
+        third_host.state(),
+        expected.state,
+        "{label}: globals, twice"
+    );
+}
+
+/// Round-trips every yield of every script and returns how many resume points it checked.
+pub fn round_trip_all(scripts: &[Script]) -> usize {
+    let mut points = 0;
+    for script in scripts {
+        let (_, _, expected) = run(script, None);
+        let yields = expected.events.len() - 1;
+        assert!(yields > 0, "{} never yields", script.name);
+        for index in 0..yields {
+            round_trip(script, index, &expected);
+            points += 1;
+        }
+    }
+    points
+}

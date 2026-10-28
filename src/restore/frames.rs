@@ -2,10 +2,10 @@
 
 use mlua::{Function, MultiValue, ThreadStatus};
 
-use super::build::{Restorer, upvalue_names};
+use super::build::{Bind, Restorer, function_error, upvalue_names};
 use super::{RestoreError, Restored};
 use crate::capture::{Callee, Frame, Origin, ThreadData, register_origin};
-use crate::continuation::{ContinuationError, continuation_source};
+use crate::continuation::continuation_source;
 
 impl Restorer<'_> {
     /// Installs the frames of every suspended coroutine and runs each to its innermost call.
@@ -25,7 +25,7 @@ impl Restorer<'_> {
                 }
             }
         }
-        Ok(())
+        self.bind_shared()
     }
 
     /// The restored captured coroutine.
@@ -61,7 +61,16 @@ impl Restorer<'_> {
         for frame in frames.iter().rev() {
             let pending = self.pending(frame, inner.take())?;
             let continuation = self.continuation(frame)?;
+            self.continuations
+                .borrow_mut()
+                .push((frame.closure, continuation.clone()));
             let vals = self.lua.create_table()?;
+            if !frame.shared.is_empty() {
+                let helpers = self.lua.create_table()?;
+                vals.set("cells", helpers.clone())?;
+                let shared = frame.shared.iter().map(|shared| shared.cell).collect();
+                self.binds.borrow_mut().push(Bind { helpers, shared });
+            }
             for (index, local) in (1..).zip(&frame.locals) {
                 vals.raw_set(index, self.to_lua(&local.value)?)?;
             }
@@ -71,9 +80,15 @@ impl Restorer<'_> {
             }
             let count = frame.varargs.len();
             let closure = self.closures[frame.closure].clone();
+            let names = frame.locals.iter().map(|local| local.name.clone());
             register_origin(
                 self.lua,
-                Origin::new(closure, (frame.line, frame.tail_call), continuation.clone()),
+                Origin::new(
+                    closure,
+                    (frame.line, frame.tail_call),
+                    continuation.clone(),
+                    names.collect(),
+                ),
             );
             inner = Some(
                 self.helpers
@@ -121,18 +136,16 @@ impl Restorer<'_> {
             .iter()
             .map(|local| local.name.clone())
             .collect();
-        let source = continuation_source(tree, id.key(), frame.site, &locals, &upvalue_names(data))
-            .map_err(|source| match source {
-                ContinuationError::NoFunction(..) => RestoreError::UnknownFunction {
-                    chunk: id.chunk.clone(),
-                    line: id.line,
-                    end_line: id.end_line,
-                },
-                source => RestoreError::Continuation {
-                    function: format!("{}:{}-{}", id.chunk, id.line, id.end_line),
-                    source,
-                },
-            })?;
+        let shared = shared_names(frame)?;
+        let source = continuation_source(
+            tree,
+            id.key(),
+            frame.site,
+            &locals,
+            &upvalue_names(data),
+            &shared,
+        )
+        .map_err(|source| function_error(id, source))?;
         let function: Function = self
             .lua
             .load(source)
@@ -142,4 +155,27 @@ impl Restorer<'_> {
         self.join(&function, &data.upvalues)?;
         Ok(function)
     }
+}
+
+/// The names of the locals of `frame` that closures share. A name that a later local of the
+/// frame declares again cannot be reached from the continuation, so it is refused.
+fn shared_names(frame: &Frame) -> Result<Vec<String>, RestoreError> {
+    let mut names = Vec::new();
+    for shared in &frame.shared {
+        let name = frame
+            .locals
+            .get(shared.local)
+            .map(|local| local.name.clone())
+            .ok_or_else(|| RestoreError::Malformed(format!("no local {}", shared.local)))?;
+        let hidden = frame.locals[shared.local + 1..]
+            .iter()
+            .any(|later| later.name == name);
+        if hidden {
+            return Err(RestoreError::Malformed(format!(
+                "local `{name}` is shared with a closure, but a later local of the frame has the same name"
+            )));
+        }
+        names.push(name);
+    }
+    Ok(names)
 }

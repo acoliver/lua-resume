@@ -19,6 +19,7 @@
 //! `__lr_next` of that frame with [`PROTECTED_NEXT`], so the continuation of `f` runs inside a
 //! new `pcall` and an error raised after the restore is caught like the original.
 
+mod find;
 mod loops;
 mod path;
 mod resume;
@@ -33,6 +34,14 @@ use path::{find_function, find_site, scope_at};
 pub enum ContinuationError {
     #[error("no function defined at lines {0} to {1}")]
     NoFunction(u32, u32),
+    #[error(
+        "{count} functions are defined at lines {line} to {end_line}; put them on different lines to tell them apart"
+    )]
+    Ambiguous {
+        line: u32,
+        end_line: u32,
+        count: usize,
+    },
     #[error("the function has no call site {0}")]
     NoSite(u32),
     #[error("cannot resume inside {0}")]
@@ -48,17 +57,18 @@ pub struct FunctionKey {
 
 /// Generates the chunk source of the continuation of `function` at call site `site`.
 /// `locals` are the names of the saved locals and `upvalues` those of the function.
+/// For each name in `shared`, the continuation stores a function that has that local as its
+/// only upvalue in `__lr_v.cells`, just before the pending call. The host joins the closures
+/// that share the local's cell to it with `debug.upvaluejoin`.
 pub fn continuation_source(
     chunk: &Block,
     function: FunctionKey,
     site: u32,
     locals: &[String],
     upvalues: &[String],
+    shared: &[String],
 ) -> Result<String, ContinuationError> {
-    let body = find_function(chunk, function).ok_or(ContinuationError::NoFunction(
-        function.line,
-        function.end_line,
-    ))?;
+    let body = find_function(chunk, function)?;
     let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
     let mut stats = Vec::new();
     if !locals.is_empty() {
@@ -68,7 +78,17 @@ pub fn continuation_source(
             locals.len()
         )));
     }
-    let rest = resume::resume_block(&body.body, &steps, 0)?;
+    let binds: Vec<Stat> = shared
+        .iter()
+        .enumerate()
+        .flat_map(|(index, name)| {
+            snippet(&format!(
+                "__lr_v.cells[{}] = function() return {name} end",
+                index + 1
+            ))
+        })
+        .collect();
+    let rest = resume::resume_block(&body.body, &steps, (0, &binds))?;
     stats.extend(rest.stats);
     let block = Block {
         stats,
@@ -111,10 +131,7 @@ pub fn function_source(
     function: FunctionKey,
     upvalues: &[String],
 ) -> Result<String, ContinuationError> {
-    let body = find_function(chunk, function).ok_or(ContinuationError::NoFunction(
-        function.line,
-        function.end_line,
-    ))?;
+    let body = find_function(chunk, function)?;
     let mut stats = Vec::new();
     if !upvalues.is_empty() {
         stats.extend(snippet(&format!("local {}", upvalues.join(", "))));
@@ -147,10 +164,7 @@ pub fn site_scope(
     function: FunctionKey,
     site: u32,
 ) -> Result<SiteScope, ContinuationError> {
-    let body = find_function(chunk, function).ok_or(ContinuationError::NoFunction(
-        function.line,
-        function.end_line,
-    ))?;
+    let body = find_function(chunk, function)?;
     let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
     let scope = scope_at(body, &steps);
     Ok(SiteScope {

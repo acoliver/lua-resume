@@ -17,6 +17,7 @@
 //! userdata that are not permanents, and locals that may be to-be-closed variables (a table
 //! with a `__close` metamethod).
 
+mod alias;
 mod debug;
 mod error;
 mod frames;
@@ -30,8 +31,8 @@ pub use debug::{Debug, Info};
 pub use error::{CaptureError, PermanentError};
 pub use permanents::Permanents;
 pub use snapshot::{
-    Callee, Cell, ClosureData, Frame, FunctionId, Local, Snapshot, TableData, ThreadData,
-    UpvalueRef, Value,
+    Callee, Cell, ClosureData, Frame, FunctionId, Local, SharedLocal, Snapshot, TableData,
+    ThreadData, UpvalueRef, Value,
 };
 
 use std::collections::HashMap;
@@ -79,6 +80,7 @@ pub fn capture_all(
     capturer.listed = capturer.snapshot.threads.len();
     capturer.roots(roots)?;
     capturer.run()?;
+    capturer.find_aliases()?;
     Ok(capturer.snapshot)
 }
 
@@ -93,6 +95,7 @@ struct Shape {
 
 /// Capture state: the snapshot being built and the identities seen so far.
 struct Capturer<'a> {
+    lua: &'a Lua,
     debug: &'a Debug,
     permanents: &'a Permanents,
     yield_function: usize,
@@ -101,6 +104,10 @@ struct Capturer<'a> {
     snapshot: Snapshot,
     tables: HashMap<usize, usize>,
     closures: HashMap<usize, usize>,
+    /// The closures by snapshot index.
+    functions: Vec<mlua::Function>,
+    /// The frames whose locals are checked for sharing a cell with a closure.
+    probes: Vec<alias::Probe>,
     cells: HashMap<usize, usize>,
     threads: HashMap<usize, usize>,
     shapes: HashMap<FunctionId, Shape>,
@@ -109,7 +116,11 @@ struct Capturer<'a> {
 }
 
 impl<'a> Capturer<'a> {
-    fn new(lua: &Lua, debug: &'a Debug, permanents: &'a Permanents) -> Result<Self, CaptureError> {
+    fn new(
+        lua: &'a Lua,
+        debug: &'a Debug,
+        permanents: &'a Permanents,
+    ) -> Result<Self, CaptureError> {
         let coroutine: Option<mlua::Table> = lua.globals().get("coroutine")?;
         let yield_function = match coroutine {
             Some(table) => table
@@ -118,6 +129,7 @@ impl<'a> Capturer<'a> {
             None => 0,
         };
         Ok(Self {
+            lua,
             debug,
             permanents,
             yield_function,
@@ -125,6 +137,8 @@ impl<'a> Capturer<'a> {
             snapshot: Snapshot::default(),
             tables: HashMap::new(),
             closures: HashMap::new(),
+            functions: Vec::new(),
+            probes: Vec::new(),
             cells: HashMap::new(),
             threads: HashMap::new(),
             shapes: HashMap::new(),
