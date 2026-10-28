@@ -8,6 +8,9 @@
 //! stack are captured as well. Anything in the [`Permanents`] is saved by name. The snapshot
 //! never holds bytecode.
 //!
+//! [`capture_all`] captures several coroutines and named data roots as one graph, so values
+//! they share stay shared after a restore.
+//!
 //! Capture refuses, with an error that names the path to the value: a coroutine that is not
 //! suspended in a yielding native function, a native frame below the top, a frame that is not
 //! normalized, ambiguous function identities, unnamed stack values, native functions and
@@ -47,8 +50,34 @@ pub fn capture(
     thread: &Thread,
     permanents: &Permanents,
 ) -> Result<Snapshot, CaptureError> {
+    capture_all(lua, debug, &[], std::slice::from_ref(thread), permanents)
+}
+
+/// Captures `threads`, each suspended in a yielding native function called from normalized
+/// code, and the named data `roots`, as one graph. A table, closure, upvalue cell or coroutine
+/// reached from several threads or roots is captured once, so a restore keeps it shared.
+///
+/// Listed threads get the first indices of [`Snapshot::threads`] in the order given and
+/// [`Snapshot::captured`] repeats that order. Roots keep the order given.
+pub fn capture_all(
+    lua: &Lua,
+    debug: &Debug,
+    roots: &[(&str, mlua::Value)],
+    threads: &[Thread],
+    permanents: &Permanents,
+) -> Result<Snapshot, CaptureError> {
     let mut capturer = Capturer::new(lua, debug, permanents)?;
-    capturer.thread_id(thread, &Path::root("thread"));
+    for (index, thread) in threads.iter().enumerate() {
+        let label = if threads.len() == 1 {
+            "thread".to_owned()
+        } else {
+            format!("thread {index}")
+        };
+        let id = capturer.thread_id(thread, &Path::root(&label));
+        capturer.snapshot.captured.push(id);
+    }
+    capturer.listed = capturer.snapshot.threads.len();
+    capturer.roots(roots)?;
     capturer.run()?;
     Ok(capturer.snapshot)
 }
@@ -67,6 +96,8 @@ struct Capturer<'a> {
     debug: &'a Debug,
     permanents: &'a Permanents,
     yield_function: usize,
+    /// Threads below this index were asked for and must be suspended.
+    listed: usize,
     snapshot: Snapshot,
     tables: HashMap<usize, usize>,
     closures: HashMap<usize, usize>,
@@ -90,6 +121,7 @@ impl<'a> Capturer<'a> {
             debug,
             permanents,
             yield_function,
+            listed: 0,
             snapshot: Snapshot::default(),
             tables: HashMap::new(),
             closures: HashMap::new(),

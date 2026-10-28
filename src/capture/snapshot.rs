@@ -123,13 +123,22 @@ pub enum ThreadData {
     Dead,
 }
 
-/// A captured coroutine and everything it reaches. `threads[0]` is the captured coroutine.
+/// Coroutines, named roots and everything they reach, as one graph. Every table, closure,
+/// cell and coroutine appears once, so values shared between coroutines and roots are shared
+/// after a restore. A single capture has `threads[0]` as the captured coroutine.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub threads: Vec<ThreadData>,
     pub tables: Vec<TableData>,
     pub closures: Vec<ClosureData>,
     pub cells: Vec<Cell>,
+    /// Named data roots, in the order the host gave them.
+    #[serde(default)]
+    pub roots: Vec<(String, Value)>,
+    /// The coroutines the host asked to capture, as indices into `threads`, in the order the
+    /// host gave them. Other entries of `threads` were reached through values.
+    #[serde(default)]
+    pub captured: Vec<usize>,
 }
 
 impl Snapshot {

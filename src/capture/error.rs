@@ -28,6 +28,8 @@ pub enum CaptureError {
     NativeFunction { path: String },
     #[error("{path}: unnamed stack value `{name}`")]
     Unnamed { path: String, name: String },
+    #[error("the root name `{name}` is used twice")]
+    DuplicateRoot { name: String },
     #[error("{path}: values of type {kind} cannot be saved")]
     Unsupported { path: String, kind: &'static str },
 }

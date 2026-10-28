@@ -21,10 +21,25 @@ impl Capturer<'_> {
             match work {
                 Work::Table(table, id, path) => self.fill_table(&table, id, &path)?,
                 Work::Thread(thread, id, path) => {
-                    let data = self.thread_data(&thread, &path, id == 0)?;
+                    let data = self.thread_data(&thread, &path, id < self.listed)?;
                     self.snapshot.threads[id] = data;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Records the named roots, in order.
+    pub(super) fn roots(&mut self, roots: &[(&str, Lua)]) -> Result<(), CaptureError> {
+        for (name, value) in roots {
+            if self.snapshot.roots.iter().any(|(known, _)| known == name) {
+                return Err(CaptureError::DuplicateRoot {
+                    name: (*name).to_owned(),
+                });
+            }
+            let path = Path::root(&format!("root `{name}`"));
+            let value = self.value(value, &path)?;
+            self.snapshot.roots.push(((*name).to_owned(), value));
         }
         Ok(())
     }
