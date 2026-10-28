@@ -38,6 +38,7 @@ mod storage;
 mod walk;
 
 pub use check::check_normal_form;
+pub(crate) use walk::has_call;
 
 use crate::compiled::Compiled;
 use crate::syntax::ast::Block;

@@ -201,6 +201,18 @@ impl Func {
         out.push(if_kind(line, done, otherwise));
     }
 
+    /// `for i = a, b, c do B end` keeps its limit and step, and the value of `i` at the start
+    /// of each iteration, in named locals so a saved frame in `B` holds all the loop state:
+    ///
+    /// ```lua
+    /// do
+    ///   local limit, step = b, c
+    ///   for i = a, limit, step do
+    ///     local control = i
+    ///     B
+    ///   end
+    /// end
+    /// ```
     fn numeric_for(&mut self, source: &Stat, out: &mut Vec<Stat>) {
         let StatKind::NumericFor {
             var,
@@ -212,28 +224,43 @@ impl Func {
         else {
             return;
         };
+        let line = source.line;
         let mut header = vec![start, limit];
         header.extend(step);
         let mut header = self.value_refs(&header).into_iter();
-        out.append(&mut self.pre);
+        let mut outer = mem::take(&mut self.pre);
         let (start, limit) = (
             header.next().unwrap_or(Expr::Nil),
             header.next().unwrap_or(Expr::Nil),
         );
+        let step = header
+            .next()
+            .unwrap_or_else(|| Expr::Number("1".to_owned()));
+        let [limit_name, step_name, control] = self.numeric_names();
+        outer.push(local_stat(
+            line,
+            &[&limit_name, &step_name],
+            vec![limit, step],
+        ));
         self.push_scope();
         self.declare(var);
-        let body = self.block(body);
+        let mut body = self.block(body);
         self.pop_scope();
+        body.stats.insert(
+            0,
+            local_stat(line, &[&control], vec![Expr::Name(var.clone())]),
+        );
         let kind = StatKind::NumericFor {
             var: var.clone(),
             start,
-            limit,
-            step: header.next(),
+            limit: Expr::Name(limit_name),
+            step: Some(Expr::Name(step_name)),
             body,
         };
+        outer.push(Stat { line, kind });
         out.push(Stat {
-            line: source.line,
-            kind,
+            line,
+            kind: StatKind::Do(block_of(outer, None)),
         });
     }
 
