@@ -133,8 +133,6 @@ pub fn run(script: &Script, stop: Option<usize>) -> (Host, Thread, Run) {
     (host, thread, Run { events, state })
 }
 
-pub mod scripts;
-
 /// Continues `thread` in `host` through the remaining inputs from yield `from`.
 fn finish(host: &Host, thread: &mlua::Thread, script: &Script, from: usize) -> Vec<String> {
     let mut events = Vec::new();

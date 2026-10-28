@@ -4,11 +4,13 @@
 //! coroutine is captured and restored again, and the second snapshot must equal the first.
 
 mod restore_support;
+#[path = "restore_support/scripts.rs"]
+mod scripts;
 
 use lua_resume::capture::{Permanents, Snapshot};
 use lua_resume::restore::{RestoreError, Sources, restore};
-use restore_support::scripts::SCRIPTS;
 use restore_support::{Host, round_trip_all, run};
+use scripts::SCRIPTS;
 
 #[test]
 fn every_yield_of_every_script_restores_in_a_fresh_state() {
