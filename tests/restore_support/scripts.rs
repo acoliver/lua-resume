@@ -140,4 +140,24 @@ end
         args: "1, nil, 3, nil",
         inputs: &["'n'", "'m'"],
     },
+    Script {
+        name: "a call whose argument is a call, waiting in the outer call",
+        source: "local function leaf(a)
+  local got = coroutine.yield('leaf', a)
+  return got + 1
+end
+local function pick(x) return x end
+function main(n)
+  local total = 0
+  while total < n do
+    local v = leaf(pick(total))
+    local got = coroutine.yield(pick(total + v))
+    total = total + v + got
+  end
+  return total
+end
+",
+        args: "10",
+        inputs: &["5", "1", "2", "1", "0", "4", "2", "3", "7"],
+    },
 ];

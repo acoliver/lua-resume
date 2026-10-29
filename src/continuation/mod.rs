@@ -28,6 +28,7 @@ mod site;
 use crate::syntax::ast::{Block, Expr, Stat, StatKind};
 use crate::syntax::{parse, print};
 use path::{find_function, find_site, scope_at};
+pub use site::Pending;
 
 /// Why a continuation cannot be generated.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -55,8 +56,10 @@ pub struct FunctionKey {
     pub end_line: u32,
 }
 
-/// Generates the chunk source of the continuation of `function` at call site `site`.
-/// `locals` are the names of the saved locals and `upvalues` those of the function.
+/// Generates the chunk source of the continuation of `function` at call site `site`, for a
+/// frame suspended in the outermost call of the site statement, which is what capture and
+/// import produce. `locals` are the names of the saved locals and `upvalues` those of the
+/// function.
 /// For each name in `shared`, the continuation stores a function that has that local as its
 /// only upvalue in `__lr_v.cells`, just before the pending call. The host joins the closures
 /// that share the local's cell to it with `debug.upvaluejoin`.
@@ -64,6 +67,25 @@ pub fn continuation_source(
     chunk: &Block,
     function: FunctionKey,
     site: u32,
+    locals: &[String],
+    upvalues: &[String],
+    shared: &[String],
+) -> Result<String, ContinuationError> {
+    continuation_source_with(
+        chunk,
+        function,
+        (site, Pending::Outermost),
+        locals,
+        upvalues,
+        shared,
+    )
+}
+
+/// [`continuation_source`] for a frame suspended in the call `pending` selects.
+pub fn continuation_source_with(
+    chunk: &Block,
+    function: FunctionKey,
+    (site, pending): (u32, Pending),
     locals: &[String],
     upvalues: &[String],
     shared: &[String],
@@ -88,7 +110,7 @@ pub fn continuation_source(
             ))
         })
         .collect();
-    let rest = resume::resume_block(&body.body, &steps, (0, &binds))?;
+    let rest = resume::resume_block(&body.body, &steps, (0, &binds), pending)?;
     stats.extend(rest.stats);
     let block = Block {
         stats,
