@@ -73,3 +73,10 @@ function ticks(limit)
   end
   return sum
 end
+local seed = {}
+local count = 1
+function stash(k)
+  seed[coroutine.yield('stash', k)] = count
+  count = count + 1
+  return count, seed[k]
+end

@@ -10,16 +10,26 @@
 //! and the next resume with some values behaves like resuming the original with them.
 //!
 //! [`restore_all`] rebuilds the roots and every coroutine of a snapshot from one graph.
+//! [`check_restore`] lists every refusal a restore would hit, for a host that wants to see all
+//! the gaps in a large save at once.
+//!
+//! Upvalues are bound by name. A closure restored from a Lua 5.3 save or from a capture takes
+//! each upvalue of the rebuilt function from the saved cell of the same name, whatever order
+//! the two compiles number them in. Equal names pair in order. `_ENV` that the save lacks stays
+//! the environment of the chunk the function is loaded in; any other name that only one side
+//! has is refused.
 //!
 //! The code comes from [`Sources`], the host's trusted normalized chunks; a snapshot supplies
 //! only data and names. A snapshot that names a function, chunk or permanent the host does
 //! not have, or whose function no longer matches the source, is refused.
 
 mod build;
+mod check;
 mod error;
 mod frames;
 mod sources;
 
+pub use check::{Refusal, check_restore};
 pub use error::RestoreError;
 pub use sources::Sources;
 

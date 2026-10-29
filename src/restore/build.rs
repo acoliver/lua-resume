@@ -63,6 +63,39 @@ pub(super) fn upvalue_names(data: &ClosureData) -> Vec<String> {
         .collect()
 }
 
+/// Whether the rebuilt function and the save have the same upvalues. Order is irrelevant: a
+/// Lua 5.3 compile and a 5.4 compile of the normalized source number the same upvalues
+/// differently. Equal names count by occurrence. `_ENV` may be missing on either side: a save
+/// without it leaves the rebuilt function in the chunk's environment, and a function that
+/// no longer uses globals has nothing to bind it to.
+fn same_upvalue_names(target: &[String], saved: &[&str]) -> bool {
+    let mut have: Vec<&str> = target
+        .iter()
+        .map(String::as_str)
+        .filter(|name| *name != ENV)
+        .collect();
+    let mut want: Vec<&str> = saved.iter().copied().filter(|name| *name != ENV).collect();
+    have.sort_unstable();
+    want.sort_unstable();
+    have == want
+}
+
+/// The saved upvalue each upvalue of the rebuilt function takes its cell from: the saved one
+/// of the same name, and for equal names the one at the same position among them.
+fn pair_by_name<'s>(target: &[String], saved: &'s [UpvalueRef]) -> Vec<Option<&'s UpvalueRef>> {
+    target
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let earlier = target[..index]
+                .iter()
+                .filter(|other| *other == name)
+                .count();
+            saved.iter().filter(|up| up.name == *name).nth(earlier)
+        })
+        .collect()
+}
+
 impl<'a> Restorer<'a> {
     pub(super) fn new(
         lua: &'a Lua,
@@ -94,9 +127,7 @@ impl<'a> Restorer<'a> {
         for _ in &self.snapshot.tables {
             self.tables.push(self.lua.create_table()?);
         }
-        for _ in &self.snapshot.cells {
-            self.holders.push(self.helpers.cell.call(())?);
-        }
+        self.create_cells()?;
         for data in &self.snapshot.closures {
             let closure = self.load_closure(data)?;
             self.closures.push(closure);
@@ -107,6 +138,31 @@ impl<'a> Restorer<'a> {
             self.slots.push(slot);
         }
         Ok(())
+    }
+
+    /// Creates the empty holder of every upvalue cell.
+    pub(super) fn create_cells(&mut self) -> Result<(), RestoreError> {
+        for _ in &self.snapshot.cells {
+            self.holders.push(self.helpers.cell.call(())?);
+        }
+        Ok(())
+    }
+
+    /// What `value` names that the host cannot supply, if anything.
+    pub(super) fn missing(&self, value: &Value) -> Option<RestoreError> {
+        match value {
+            Value::Permanent(name) => self
+                .permanents
+                .get(name)
+                .is_none()
+                .then(|| RestoreError::MissingPermanent(name.clone())),
+            Value::LightUserData(handle) => self
+                .permanents
+                .light(*handle)
+                .is_none()
+                .then_some(RestoreError::MissingLightUserData(*handle)),
+            _ => None,
+        }
     }
 
     /// A coroutine that will start in whatever its slot holds, or a finished one.
@@ -201,7 +257,7 @@ impl<'a> Restorer<'a> {
 
     /// The closure of the function the source defines at the saved identity, with its upvalues
     /// joined to the shared cells.
-    fn load_closure(&self, data: &ClosureData) -> Result<Function, RestoreError> {
+    pub(super) fn load_closure(&self, data: &ClosureData) -> Result<Function, RestoreError> {
         let id = &data.function;
         let tree = self
             .sources
@@ -231,23 +287,24 @@ impl<'a> Restorer<'a> {
         if (info.line, info.end_line) != (i64::from(id.line), i64::from(id.end_line)) {
             return Err(changed("its lines moved".to_owned()));
         }
-        let loaded = usize::try_from(info.upvalues).unwrap_or(0);
-        if loaded != data.upvalues.len() {
+        let target = self.upvalue_names_of(function)?;
+        let saved: Vec<&str> = data.upvalues.iter().map(|up| up.name.as_str()).collect();
+        if !same_upvalue_names(&target, &saved) {
             return Err(changed(format!(
-                "it has {loaded} upvalues, the save has {}",
-                data.upvalues.len()
+                "its upvalues are [{}], the save has [{}]",
+                target.join(", "),
+                saved.join(", ")
             )));
         }
-        for (index, saved) in (1..).zip(&data.upvalues) {
-            let (found, _) = self.debug.upvalue(function, index)?;
-            if found != saved.name {
-                return Err(changed(format!(
-                    "upvalue {index} is `{found}`, the save has `{}`",
-                    saved.name
-                )));
-            }
-        }
         Ok(())
+    }
+
+    /// The upvalue names of `function` in the order its compiled code numbers them.
+    fn upvalue_names_of(&self, function: &Function) -> Result<Vec<String>, RestoreError> {
+        let count = self.debug.function(function)?.upvalues;
+        (1..=count)
+            .map(|index| Ok(self.debug.upvalue(function, index)?.0))
+            .collect()
     }
 
     /// Joins each upvalue of `function` that the save names to that upvalue's shared cell.
@@ -256,10 +313,9 @@ impl<'a> Restorer<'a> {
         function: &Function,
         upvalues: &[UpvalueRef],
     ) -> Result<(), RestoreError> {
-        let count = self.debug.function(function)?.upvalues;
-        for index in 1..=count {
-            let (name, _) = self.debug.upvalue(function, index)?;
-            let Some(saved) = upvalues.iter().find(|saved| saved.name == name) else {
+        let target = self.upvalue_names_of(function)?;
+        for (index, saved) in (1..).zip(pair_by_name(&target, upvalues)) {
+            let Some(saved) = saved else {
                 continue;
             };
             let holder = self.holders.get(saved.cell).ok_or_else(|| {

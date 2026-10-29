@@ -120,7 +120,7 @@ impl Restorer<'_> {
     }
 
     /// The generated continuation function of a frame, bound to its closure's cells.
-    fn continuation(&self, frame: &Frame) -> Result<Function, RestoreError> {
+    pub(super) fn continuation(&self, frame: &Frame) -> Result<Function, RestoreError> {
         let id = &frame.function;
         let data = self
             .snapshot
