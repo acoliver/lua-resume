@@ -5,6 +5,7 @@ use crate::restore_support::Script;
 
 pub const SCRIPTS: &[Script] = &[
     Script {
+        hooked: false,
         name: "two integer loops with the same variable",
         source: "function main()
   local acc = 0
@@ -22,6 +23,7 @@ end
         inputs: &["1", "2", "3", "4", "5", "6"],
     },
     Script {
+        hooked: false,
         name: "three loops mixing integer and float",
         source: "function main()
   local acc = 0
@@ -42,6 +44,7 @@ end
         inputs: &["1", "2", "3", "4", "5", "6", "7", "8", "9"],
     },
     Script {
+        hooked: false,
         name: "nested numeric loops followed by another loop",
         source: "function main()
   local acc = 0
@@ -66,6 +69,7 @@ end
         ],
     },
     Script {
+        hooked: false,
         name: "a numeric loop after a generic loop",
         source: "function main()
   local acc = 0
@@ -83,6 +87,7 @@ end
         inputs: &["1", "2", "3", "4", "5"],
     },
     Script {
+        hooked: false,
         name: "numeric loops inside a while loop",
         source: "function main()
   local acc, round = 0, 0
@@ -103,6 +108,7 @@ end
         inputs: &["1", "2", "3", "4", "5", "6", "7", "8"],
     },
     Script {
+        hooked: false,
         name: "loops in a called function with a computed limit",
         source: "local function work(n)
   local acc = 0
@@ -125,6 +131,7 @@ end
         inputs: &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
     },
     Script {
+        hooked: false,
         name: "second loop calls a function that yields, with locals between loops",
         source: "local function ask(tag, v)
   local got = coroutine.yield(tag, v)
@@ -152,6 +159,7 @@ end
         inputs: &["1", "2", "3", "4", "5", "6", "7", "8"],
     },
     Script {
+        hooked: false,
         name: "loops with calls in the headers",
         source: "local function lim(n) return n end
 function main()

@@ -91,3 +91,9 @@ function guarded(n)
   end
   return total
 end
+function halves(n)
+  local half = n / 2
+  local got = coroutine.yield('half', half)
+  local more = coroutine.yield('more', got / 4 + half)
+  return more / 2, got / 2
+end

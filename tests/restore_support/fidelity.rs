@@ -5,6 +5,7 @@ use crate::restore_support::Script;
 
 pub const SCRIPTS: &[Script] = &[
     Script {
+        hooked: false,
         name: "anonymous functions as arguments, fields, results and methods",
         source: "local threads = {}
 local function CreateThread(f)
@@ -50,6 +51,7 @@ end
         inputs: &["10", "20", "30", "40"],
     },
     Script {
+        hooked: false,
         name: "numeric for loops that yield",
         source: "function main()
   local acc = {}
@@ -80,6 +82,7 @@ end
         ],
     },
     Script {
+        hooked: false,
         name: "closures that share locals with their creating frame",
         source: "function main()
   local n = 0

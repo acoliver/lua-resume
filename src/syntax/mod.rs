@@ -2,12 +2,14 @@
 
 pub mod ast;
 mod expr;
+mod hooks;
 mod lexer;
 mod numeral;
 mod parser;
 mod print;
 
-pub use print::print;
+pub use hooks::{HookNameError, OperatorHooks};
+pub use print::{print, print_with};
 
 /// Source that Lua 5.4 would refuse to compile, with the line where parsing stopped.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

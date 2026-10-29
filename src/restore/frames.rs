@@ -5,7 +5,7 @@ use mlua::{Function, MultiValue, ThreadStatus};
 use super::build::{Bind, Restorer, function_error, upvalue_names};
 use super::{RestoreError, Restored};
 use crate::capture::{Callee, Frame, Origin, ThreadData, register_origin};
-use crate::continuation::continuation_source;
+use crate::continuation::{Pending, continuation_source_hooked};
 
 impl Restorer<'_> {
     /// Installs the frames of every suspended coroutine and runs each to its innermost call.
@@ -137,13 +137,12 @@ impl Restorer<'_> {
             .map(|local| local.name.clone())
             .collect();
         let shared = shared_names(frame)?;
-        let source = continuation_source(
+        let source = continuation_source_hooked(
             tree,
             id.key(),
-            frame.site,
-            &locals,
-            &upvalue_names(data),
-            &shared,
+            (frame.site, Pending::Outermost),
+            (&locals, &upvalue_names(data), &shared),
+            self.sources.hooks(),
         )
         .map_err(|source| function_error(id, source))?;
         let function: Function = self

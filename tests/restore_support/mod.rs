@@ -1,12 +1,14 @@
 //! A host that runs a normalized script in a Lua state, drives its coroutine and saves it.
 
+#[path = "../hook_support/mod.rs"]
+mod hook_support;
 #[path = "../support/mod.rs"]
 mod normalizer;
 
 use lua_resume::capture::{Debug, Permanents, Snapshot, capture};
 use lua_resume::restore::{RestoreError, Sources, restore};
 use lua_resume::syntax::ast::Block;
-use lua_resume::syntax::print;
+use lua_resume::syntax::{OperatorHooks, print_with};
 use lua_resume_debug::new_lua_with_private_debug;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread};
 
@@ -20,6 +22,9 @@ pub struct Script {
     pub args: &'static str,
     /// One Lua list of values per later resume.
     pub inputs: &'static [&'static str],
+    /// Whether the source is loaded with `/` printed as a call of the host division
+    /// function `__lr_div`.
+    pub hooked: bool,
 }
 
 pub struct Host {
@@ -27,11 +32,17 @@ pub struct Host {
     pub debug: Debug,
     pub permanents: Permanents,
     pub tree: Block,
+    pub hooks: OperatorHooks,
 }
 
 impl Host {
     /// A new Lua state with `source` normalized and loaded as the chunk `script.lua`.
     pub fn new(source: &str) -> Self {
+        Self::with_hooks(source, OperatorHooks::none())
+    }
+
+    /// Like [`Host::new`], printing the source with `hooks`; a division hook is installed.
+    pub fn with_hooks(source: &str, hooks: OperatorHooks) -> Self {
         let (lua, table) =
             new_lua_with_private_debug(StdLib::ALL_SAFE, LuaOptions::default()).unwrap();
         let debug = Debug::new(&table).unwrap();
@@ -41,19 +52,33 @@ impl Host {
         permanents.insert("ipairs iterator", aux).unwrap();
         lua.load(HELPERS).exec().unwrap();
         let tree = normalizer::normalize_source(source.as_bytes()).unwrap();
-        lua.load(print(&tree)).set_name(CHUNK).exec().unwrap();
+        hook_support::install(&lua, &hooks);
+        lua.load(print_with(&tree, &hooks))
+            .set_name(CHUNK)
+            .exec()
+            .unwrap();
         Self {
             lua,
             debug,
             permanents,
             tree,
+            hooks,
+        }
+    }
+
+    /// A host for `script`, with the division hook if the script asks for it.
+    pub fn for_script(script: &Script) -> Self {
+        if script.hooked {
+            Self::with_hooks(script.source, hook_support::division_hooks())
+        } else {
+            Self::new(script.source)
         }
     }
 
     pub fn sources(&self) -> Sources {
         let mut sources = Sources::new();
         sources.insert(CHUNK, self.tree.clone());
-        sources
+        sources.with_hooks(self.hooks.clone())
     }
 
     /// A coroutine running the global function `main`.
@@ -116,7 +141,7 @@ pub struct Run {
 /// Runs `script` until its coroutine returns or fails. With `stop`, runs to that yield and
 /// returns the host and thread still suspended there.
 pub fn run(script: &Script, stop: Option<usize>) -> (Host, Thread, Run) {
-    let host = Host::new(script.source);
+    let host = Host::for_script(script);
     let thread = host.start();
     let mut events = vec![host.step(&thread, script.args)];
     while events
@@ -147,7 +172,7 @@ fn finish(host: &Host, thread: &mlua::Thread, script: &Script, from: usize) -> V
 }
 
 fn fresh_host(script: &Script, globals: &str) -> Host {
-    let host = Host::new(script.source);
+    let host = Host::for_script(script);
     host.lua.load(globals).exec().unwrap();
     host
 }

@@ -5,6 +5,7 @@ use crate::restore_support::Script;
 
 pub const SCRIPTS: &[Script] = &[
     Script {
+        hooked: false,
         name: "nested calls, loops, goto continue and varargs",
         source: "local function leaf(a, b)
   local got = coroutine.yield('leaf', a)
@@ -48,6 +49,7 @@ end
         inputs: &["10", "20", "30", "40", "50", "60", "70", "80", "90", "100"],
     },
     Script {
+        hooked: false,
         name: "pcall and xpcall errors after the restore, and tail calls",
         source: "local function risky(v)
   if v == 'boom' then error('bad ' .. v, 0) end
@@ -74,6 +76,7 @@ end
         inputs: &["'boom'", "'boom'", "'last'", "'tailed'"],
     },
     Script {
+        hooked: false,
         name: "closures sharing upvalues, cyclic tables and metatables",
         source: "local function counter()
   local n = 0
@@ -105,6 +108,7 @@ end
         inputs: &["1", "2"],
     },
     Script {
+        hooked: false,
         name: "a coroutine holding another coroutine",
         source: "function main()
   local function body(a)
@@ -125,6 +129,7 @@ end
         inputs: &["'x'", "'y'", "'z'"],
     },
     Script {
+        hooked: false,
         name: "varargs, multiple results and return calls",
         source: "local function pack2(...) return select('#', ...), ... end
 local function va(a, ...)
@@ -141,6 +146,7 @@ end
         inputs: &["'n'", "'m'"],
     },
     Script {
+        hooked: false,
         name: "a call whose argument is a call, waiting in the outer call",
         source: "local function leaf(a)
   local got = coroutine.yield('leaf', a)
