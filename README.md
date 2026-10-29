@@ -174,12 +174,12 @@ Each frame then gets a generated continuation (see above) bound to the saved clo
 
 The restore registers each continuation in the Lua state as the frame it continues. A later `capture` of the restored coroutine reports the original function, closure, line and locals, so save, restore, save gives equal snapshots. The tests check this at every yield.
 
-`restore` refuses, with an error that says why: a permanent the host did not register, a chunk with no source, a function identity the source does not define, and a function whose lines, upvalue count or upvalue names differ from the saved closure.
+`restore` refuses, with an error that says why: a permanent the host did not register, a chunk with no source, a function identity the source does not define, a function whose lines, upvalue count or upvalue names differ from the saved closure, and a function that now uses an enclosing local the save has no upvalue for (the tree is scoped as Lua 5.4 does, so a name that resolves to a local of an enclosing function counts and a global does not). The error is `SourceChanged` and lists the upvalues the source needs and the ones the save has; `check_restore` reports it too.
 
 Limits of this step:
 
 - Two functions that start and end on the same lines cannot be told apart and are refused. The debug library reports no more than those two lines.
-- A new reference in the source to an enclosing local that the save did not record is read as a global. The check compares lines and the upvalue names and count the save recorded.
+- The check compares lines and the upvalue names and count the save recorded. Two functions that start and end on the same lines are refused, so it does not need to tell them apart.
 - A call with a nested last-argument call, such as `f(a, g())`, has one site, and the continuation takes `g` as the pending call. A coroutine waiting in `f` is continued wrongly.
 - A continuation reports positions in error messages by the lines of its generated source. Re-entered loops can print their body on a later line than the original. Tests raise errors with level 0.
 - Frames inside `pcall` and `xpcall` are not captured yet (capture refuses native frames), so the `PROTECTED_NEXT` path is only reached for errors raised after a restore, not for a restore from inside the protected call.

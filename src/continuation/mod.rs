@@ -21,12 +21,14 @@
 
 mod find;
 mod loops;
+mod needs;
 mod path;
 mod resume;
 mod site;
 
 use crate::syntax::ast::{Block, Expr, Stat, StatKind};
 use crate::syntax::{OperatorHooks, parse, print_with};
+pub use needs::needed_upvalues;
 use path::{find_function, find_site, scope_at};
 pub use site::Pending;
 
