@@ -192,6 +192,14 @@ impl<'a> Restorer<'a> {
     /// A coroutine that will start in whatever its slot holds, or a finished one.
     fn shell(&self, data: &ThreadData) -> Result<(Thread, Table), RestoreError> {
         let slot = self.lua.create_table()?;
+        if let ThreadData::Unstarted { function } = data {
+            let Lua_::Function(function) = self.to_lua(function)? else {
+                return Err(RestoreError::Malformed(
+                    "an unstarted coroutine's function is not a function".to_owned(),
+                ));
+            };
+            return Ok((self.lua.create_thread(function)?, slot));
+        }
         if matches!(data, ThreadData::Suspended { .. }) {
             let body: Function = self.helpers.entry.call(slot.clone())?;
             return Ok((self.lua.create_thread(body)?, slot));

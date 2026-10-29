@@ -90,7 +90,7 @@ fn several_threads_import_into_one_snapshot_in_order() {
                 .unwrap()
                 .value
                 .clone(),
-            other @ lua_resume::capture::ThreadData::Dead => panic!("thread {thread} is {other:?}"),
+            other => panic!("thread {thread} is {other:?}"),
         })
         .collect();
     assert_eq!(outs, [Value::Table(1), Value::Table(1)]);

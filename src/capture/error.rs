@@ -8,8 +8,6 @@ pub enum CaptureError {
     Lua(#[from] mlua::Error),
     #[error("{path}: the coroutine is {state}")]
     NotSuspended { path: String, state: &'static str },
-    #[error("{path}: the coroutine has not started, so it has no frames")]
-    NotStarted { path: String },
     #[error("{path}: the top frame is `{found}`, not a yielding native function")]
     NotYielding { path: String, found: String },
     #[error("{path}: native frame `{name}` is not the yielding function")]

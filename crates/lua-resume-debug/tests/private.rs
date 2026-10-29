@@ -42,3 +42,32 @@ fn a_state_without_the_package_library_still_works() {
     assert!(lua.globals().get::<Value>("debug").unwrap().is_nil());
     assert!(debug.contains_key("getlocal").unwrap());
 }
+
+#[test]
+fn the_function_of_a_coroutine_that_has_not_run_is_readable_by_the_host() {
+    let (lua, debug) = state();
+    let unstarted: Function = debug.get("unstartedfunction").unwrap();
+    let body: Function = lua
+        .load("return function(...) coroutine.yield(...) end")
+        .eval()
+        .unwrap();
+    let thread = lua.create_thread(body.clone()).unwrap();
+    let found: Option<Function> = unstarted.call(thread.clone()).unwrap();
+    assert_eq!(found.unwrap(), body);
+    assert_eq!(thread.status(), mlua::ThreadStatus::Resumable);
+
+    thread.resume::<()>(1).unwrap();
+    assert!(
+        unstarted
+            .call::<Option<Function>>(thread.clone())
+            .unwrap()
+            .is_none()
+    );
+    thread.resume::<()>(()).unwrap();
+    assert!(
+        unstarted
+            .call::<Option<Function>>(thread)
+            .unwrap()
+            .is_none()
+    );
+}

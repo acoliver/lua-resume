@@ -14,6 +14,8 @@ pub struct Debug {
     pub setupvalue: Function,
     pub upvalueid: Function,
     pub upvaluejoin: Function,
+    /// The host's `unstartedfunction`, which reads the function of a coroutine that has not run.
+    pub unstartedfunction: Function,
 }
 
 /// What `debug.getinfo` reports about a function or stack level.
@@ -73,6 +75,7 @@ impl Debug {
             setupvalue: table.get("setupvalue")?,
             upvalueid: table.get("upvalueid")?,
             upvaluejoin: table.get("upvaluejoin")?,
+            unstartedfunction: table.get("unstartedfunction")?,
         })
     }
 
@@ -80,6 +83,11 @@ impl Debug {
     pub fn level(&self, thread: &Thread, level: i64) -> mlua::Result<Option<Info>> {
         let table: Option<Table> = self.getinfo.call((thread.clone(), level, WHAT))?;
         table.as_ref().map(Info::read).transpose()
+    }
+
+    /// The function `thread` runs when first resumed, or `None` when it has started.
+    pub fn unstarted_function(&self, thread: &Thread) -> mlua::Result<Option<Function>> {
+        self.unstartedfunction.call(thread.clone())
     }
 
     /// What is known about `function`.

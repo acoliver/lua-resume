@@ -36,7 +36,9 @@ impl Restorer<'_> {
     /// The restored captured coroutine.
     pub(super) fn first_thread(&self) -> Result<mlua::Thread, RestoreError> {
         match (self.snapshot.threads.first(), self.threads.first()) {
-            (Some(ThreadData::Suspended { .. }), Some(thread)) => Ok(thread.clone()),
+            (Some(ThreadData::Suspended { .. } | ThreadData::Unstarted { .. }), Some(thread)) => {
+                Ok(thread.clone())
+            }
             _ => Err(RestoreError::Malformed(
                 "the snapshot has no suspended coroutine to restore".to_owned(),
             )),
