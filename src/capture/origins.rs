@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use mlua::{Function, Lua};
 
+use super::FunctionId;
+
 /// The saved frame a continuation function continues.
 #[derive(Clone)]
 pub(crate) struct Origin {
@@ -56,5 +58,35 @@ pub(crate) fn register(lua: &Lua, origin: Origin) {
 pub(super) fn all(lua: &Lua) -> HashMap<usize, Origin> {
     lua.app_data_ref::<Registry>()
         .map(|registry| registry.0.clone())
+        .unwrap_or_default()
+}
+
+/// Where a function that a continuation defines again sits in the generated source, mapped to
+/// the lines of its definition in the game's source. `None` marks lines that two different
+/// originals moved to.
+#[derive(Default)]
+struct Relocations(HashMap<FunctionId, Option<FunctionId>>);
+
+/// Records that the function the generated source defines at `printed` is the one the game's
+/// source defines at `original`.
+pub(crate) fn register_relocation(lua: &Lua, printed: FunctionId, original: &FunctionId) {
+    if lua.app_data_mut::<Relocations>().is_none() {
+        lua.set_app_data(Relocations::default());
+    }
+    if let Some(mut moved) = lua.app_data_mut::<Relocations>() {
+        let known = moved
+            .0
+            .entry(printed)
+            .or_insert_with(|| Some(original.clone()));
+        if known.as_ref() != Some(original) {
+            *known = None;
+        }
+    }
+}
+
+/// The relocations registered in `lua`.
+pub(super) fn relocations(lua: &Lua) -> HashMap<FunctionId, Option<FunctionId>> {
+    lua.app_data_ref::<Relocations>()
+        .map(|moved| moved.0.clone())
         .unwrap_or_default()
 }

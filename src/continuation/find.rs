@@ -26,6 +26,13 @@ pub(super) fn locate(block: &Block, key: FunctionKey) -> Found<'_> {
     }
 }
 
+/// Every function in the block, outer before nested, in tree order.
+pub(super) fn all_functions(block: &Block) -> Vec<&FuncBody> {
+    let mut all = Vec::new();
+    in_block(block, &mut all);
+    all
+}
+
 fn in_block<'a>(block: &'a Block, out: &mut Vec<&'a FuncBody>) {
     for stat in &block.stats {
         in_stat(stat, out);

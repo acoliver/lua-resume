@@ -182,6 +182,7 @@ Limits of this step:
 - The check compares lines and the upvalue names and count the save recorded. Two functions that start and end on the same lines are refused, so it does not need to tell them apart.
 - A call with a nested last-argument call, such as `f(a, g())`, has one site, and the continuation takes `g` as the pending call. A coroutine waiting in `f` is continued wrongly.
 - A continuation reports positions in error messages by the lines of its generated source. Re-entered loops can print their body on a later line than the original. Tests raise errors with level 0.
+- A loop re-entered in the middle of an iteration is generated twice, and the copy that runs later iterations sits on later lines than the original. A closure that copy creates is saved under the lines of the function it stands for: the restore tells `capture` where each such function moved. If the new lines belong to a function of the source, the restore of that frame is refused.
 - Frames inside `pcall` and `xpcall` are not captured yet (capture refuses native frames), so the `PROTECTED_NEXT` path is only reached for errors raised after a restore, not for a restore from inside the protected call.
 
 ## License

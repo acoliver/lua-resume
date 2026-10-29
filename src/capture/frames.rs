@@ -204,15 +204,41 @@ impl Capturer<'_> {
             upvalues: info.upvalues,
             active_lines: info.active_lines.clone(),
         };
+        match self.relocations.get(&id) {
+            Some(Some(original)) => self.identify_moved(original.clone(), &shape),
+            Some(None) => Err(CaptureError::Ambiguous {
+                function: format!("{}:{line}-{end_line}", id.chunk),
+            }),
+            None => self.identify_plain(id, shape),
+        }
+    }
+
+    fn identify_plain(&mut self, id: FunctionId, shape: Shape) -> Result<FunctionId, CaptureError> {
         match self.shapes.get(&id) {
             Some(known) if *known != shape => Err(CaptureError::Ambiguous {
-                function: format!("{}:{line}-{end_line}", id.chunk),
+                function: format!("{}:{}-{}", id.chunk, id.line, id.end_line),
             }),
             Some(_) => Ok(id),
             None => {
                 self.shapes.insert(id.clone(), shape);
                 Ok(id)
             }
+        }
+    }
+
+    /// A function a continuation defined again on other lines. Its lines with code moved with
+    /// it, so only the parameters and upvalue count are compared.
+    fn identify_moved(&self, id: FunctionId, shape: &Shape) -> Result<FunctionId, CaptureError> {
+        match self.shapes.get(&id) {
+            Some(known)
+                if (known.params, known.vararg, known.upvalues)
+                    != (shape.params, shape.vararg, shape.upvalues) =>
+            {
+                Err(CaptureError::Ambiguous {
+                    function: format!("{}:{}-{}", id.chunk, id.line, id.end_line),
+                })
+            }
+            _ => Ok(id),
         }
     }
 

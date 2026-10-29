@@ -4,8 +4,12 @@ use mlua::{Function, MultiValue, ThreadStatus};
 
 use super::build::{Bind, Restorer, function_error, upvalue_names};
 use super::{RestoreError, Restored};
-use crate::capture::{Callee, Frame, Origin, ThreadData, register_origin};
-use crate::continuation::{Pending, continuation_source_hooked};
+use crate::capture::{
+    Callee, Frame, FunctionId, Origin, ThreadData, register_origin, register_relocation,
+};
+use crate::continuation::{
+    Continuation, ContinuationError, Pending, continuation_hooked, defines_function,
+};
 
 impl Restorer<'_> {
     /// Installs the frames of every suspended coroutine and runs each to its innermost call.
@@ -137,7 +141,7 @@ impl Restorer<'_> {
             .map(|local| local.name.clone())
             .collect();
         let shared = shared_names(frame)?;
-        let source = continuation_source_hooked(
+        let made = continuation_hooked(
             tree,
             id.key(),
             (frame.site, Pending::Outermost),
@@ -145,14 +149,46 @@ impl Restorer<'_> {
             self.sources.hooks(),
         )
         .map_err(|source| function_error(id, source))?;
+        self.register_moved(id, tree, &made)?;
         let function: Function = self
             .lua
-            .load(source)
+            .load(made.source)
             .set_name(&id.chunk)
             .into_function()?
             .call(())?;
         self.join(&function, &data.upvalues)?;
         Ok(function)
+    }
+}
+
+impl Restorer<'_> {
+    /// Tells capture which function of the game's source each function that the continuation
+    /// defines on other lines stands for, so a closure the continuation creates is saved as
+    /// the function it is. Lines that belong to a function of the game's source cannot be
+    /// told apart, so such a continuation is refused.
+    fn register_moved(
+        &self,
+        id: &FunctionId,
+        tree: &crate::syntax::ast::Block,
+        made: &Continuation,
+    ) -> Result<(), RestoreError> {
+        let at = |key: crate::continuation::FunctionKey| FunctionId {
+            chunk: id.chunk.clone(),
+            line: key.line,
+            end_line: key.end_line,
+        };
+        for moved in &made.moved {
+            if defines_function(tree, moved.generated) {
+                return Err(RestoreError::Continuation {
+                    function: format!("{}:{}-{}", id.chunk, id.line, id.end_line),
+                    source: ContinuationError::Unsupported(
+                        "a re-entered loop whose copy takes the lines of another function",
+                    ),
+                });
+            }
+            register_relocation(self.lua, at(moved.generated), &at(moved.original));
+        }
+        Ok(())
     }
 }
 

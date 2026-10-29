@@ -108,9 +108,51 @@ pub fn continuation_source_hooked(
     chunk: &Block,
     function: FunctionKey,
     (site, pending): (u32, Pending),
-    (locals, upvalues, shared): (&[String], &[String], &[String]),
+    names: (&[String], &[String], &[String]),
     hooks: &OperatorHooks,
 ) -> Result<String, ContinuationError> {
+    continuation_hooked(chunk, function, (site, pending), names, hooks).map(|made| made.source)
+}
+
+/// A function the continuation defines on other lines than the game's source does. A loop
+/// that is re-entered in the middle of an iteration appears twice, the rest of the iteration
+/// and the whole body, and printed lines only move forward, so the second copy cannot keep
+/// its lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moved {
+    /// The lines of the definition in the game's source.
+    pub original: FunctionKey,
+    /// The lines of the definition in the generated source.
+    pub generated: FunctionKey,
+}
+
+/// Whether `body` is one of the functions the continuation adds to hand a shared local to the
+/// host: `function() return name end` for a name in `shared`.
+fn is_bind(body: &crate::syntax::ast::FuncBody, shared: &[String]) -> bool {
+    body.params.is_empty()
+        && body.body.stats.is_empty()
+        && body.body.ret.as_ref().is_some_and(
+            |ret| matches!(&ret.values[..], [Expr::Name(name)] if shared.contains(name)),
+        )
+}
+
+/// A generated continuation and where its functions moved to.
+#[derive(Clone, Debug)]
+pub struct Continuation {
+    pub source: String,
+    /// The functions the continuation defines on other lines than the game's source, outer
+    /// before nested.
+    pub moved: Vec<Moved>,
+}
+
+/// [`continuation_source_hooked`] that also reports the functions that moved.
+pub fn continuation_hooked(
+    chunk: &Block,
+    function: FunctionKey,
+    (site, pending): (u32, Pending),
+    (locals, upvalues, shared): (&[String], &[String], &[String]),
+    hooks: &OperatorHooks,
+) -> Result<Continuation, ContinuationError> {
     let body = find_function(chunk, function)?;
     let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
     let mut stats = Vec::new();
@@ -142,10 +184,43 @@ pub fn continuation_source_hooked(
     } else {
         format!("local {} ", upvalues.join(", "))
     };
-    Ok(format!(
+    let source = format!(
         "{declared}return function(__lr_v, __lr_next, __lr_unpack, ...) {} end",
         print_with(&block, hooks)
-    ))
+    );
+    let moved = moved_functions(&block, &source, shared);
+    Ok(Continuation { source, moved })
+}
+
+/// Pairs the functions of `block` with those of the source printed from it. The printed tree
+/// has the shape of the block, so the two lists line up; if they do not, nothing is reported.
+fn moved_functions(block: &Block, source: &str, shared: &[String]) -> Vec<Moved> {
+    let printed = parse(source.as_bytes()).expect("generated source parses");
+    let generated = find::all_functions(&printed);
+    let original = find::all_functions(block);
+    // The first generated function is the continuation itself.
+    let Some(nested) = generated
+        .get(1..)
+        .filter(|nested| nested.len() == original.len())
+    else {
+        return Vec::new();
+    };
+    original
+        .iter()
+        .zip(nested)
+        .filter(|(from, _)| !is_bind(from, shared))
+        .map(|(from, to)| Moved {
+            original: FunctionKey {
+                line: from.line,
+                end_line: from.end_line,
+            },
+            generated: FunctionKey {
+                line: to.line,
+                end_line: to.end_line,
+            },
+        })
+        .filter(|moved| moved.original != moved.generated)
+        .collect()
 }
 
 /// Chunk source that evaluates to `function(inner, handler)`. It returns the `__lr_next` of a
@@ -200,6 +275,11 @@ pub fn function_source_hooked(
         .expect("generated snippet parses")
         .ret;
     Ok(print_with(&Block { stats, ret }, hooks))
+}
+
+/// Whether `chunk` defines at least one function that spans the lines of `function`.
+pub fn defines_function(chunk: &Block, function: FunctionKey) -> bool {
+    !matches!(find::locate(chunk, function), find::Found::None)
 }
 
 /// The locals in scope at a call site of a normalized function.
