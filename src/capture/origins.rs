@@ -4,7 +4,7 @@
 //! The restore records, in the Lua state, which saved frame each continuation continues, so a
 //! later capture reports the original function, closure, line and tail-call flag.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mlua::{Function, Lua};
 
@@ -58,6 +58,30 @@ pub(crate) fn register(lua: &Lua, origin: Origin) {
 pub(super) fn all(lua: &Lua) -> HashMap<usize, Origin> {
     lua.app_data_ref::<Registry>()
         .map(|registry| registry.0.clone())
+        .unwrap_or_default()
+}
+
+/// The functions a restore built to run the next frame inside `pcall` or `xpcall`. Each
+/// is a Lua frame between the outer continuation and the `pcall` frame.
+#[derive(Default)]
+struct Protectors(HashMap<usize, Function>);
+
+/// Records that `function` only calls the next frame in a protected call.
+pub(crate) fn register_protector(lua: &Lua, function: &Function) {
+    if lua.app_data_mut::<Protectors>().is_none() {
+        lua.set_app_data(Protectors::default());
+    }
+    if let Some(mut protectors) = lua.app_data_mut::<Protectors>() {
+        protectors
+            .0
+            .insert(function.to_pointer().addr(), function.clone());
+    }
+}
+
+/// The addresses of the protector functions registered in `lua`.
+pub(super) fn protectors(lua: &Lua) -> HashSet<usize> {
+    lua.app_data_ref::<Protectors>()
+        .map(|protectors| protectors.0.keys().copied().collect())
         .unwrap_or_default()
 }
 

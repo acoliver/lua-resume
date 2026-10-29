@@ -12,7 +12,9 @@
 //! they share stay shared after a restore.
 //!
 //! Capture refuses, with an error that names the path to the value: a coroutine that is not
-//! suspended in a yielding native function, a native frame below the top, a frame that is not
+//! suspended in a yielding native function, a native frame below the top other than a `pcall`
+//! or `xpcall` between two Lua frames (saved as the pending call of the outer frame, with the
+//! message handler of an `xpcall`), a frame that is not
 //! normalized, ambiguous function identities, unnamed stack values, native functions and
 //! userdata that are not permanents, and locals that may be to-be-closed variables (a table
 //! with a `__close` metamethod).
@@ -35,11 +37,13 @@ pub use snapshot::{
     TableData, ThreadData, UpvalueRef, Value,
 };
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mlua::{Lua, Thread};
 
-pub(crate) use origins::{Origin, register as register_origin, register_relocation};
+pub(crate) use origins::{
+    Origin, register as register_origin, register_protector, register_relocation,
+};
 use path::Path;
 use values::Work;
 
@@ -99,6 +103,11 @@ struct Capturer<'a> {
     debug: &'a Debug,
     permanents: &'a Permanents,
     yield_function: usize,
+    /// The addresses of the host's `pcall` and `xpcall`.
+    pcall_function: usize,
+    xpcall_function: usize,
+    /// Functions a restore built that call the next frame in a protected call.
+    protectors: HashSet<usize>,
     /// Threads below this index were asked for and must be suspended.
     listed: usize,
     snapshot: Snapshot,
@@ -134,6 +143,9 @@ impl<'a> Capturer<'a> {
             debug,
             permanents,
             yield_function,
+            pcall_function: native_address(lua, permanents, "pcall"),
+            xpcall_function: native_address(lua, permanents, "xpcall"),
+            protectors: origins::protectors(lua),
             listed: 0,
             snapshot: Snapshot::default(),
             tables: HashMap::new(),
@@ -147,5 +159,20 @@ impl<'a> Capturer<'a> {
             relocations: origins::relocations(lua),
             work: Vec::new(),
         })
+    }
+}
+
+/// The address of the host's global function `name`: the permanent of that name when there
+/// is one, else the global as it is now. Zero when the host has none.
+fn native_address(lua: &Lua, permanents: &Permanents, name: &str) -> usize {
+    let value = permanents.get(name).cloned().or_else(|| {
+        lua.globals()
+            .get::<Option<mlua::Value>>(name)
+            .ok()
+            .flatten()
+    });
+    match value {
+        Some(mlua::Value::Function(function)) => function.to_pointer().addr(),
+        _ => 0,
     }
 }

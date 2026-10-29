@@ -34,7 +34,8 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 - **Import of Lua 5.3 saved threads: done for statement-level calls.** `import::import_thread` and `import::import_threads` turn host-decoded Lua 5.3 threads (stack, `CallInfo` records, open upvalues, closures, prototypes) into a `Snapshot` that `restore` (one thread) or `restore_all` accepts: function identity and call site from the prototype and call ordinal, locals by name, varargs, numeric and generic `for` registers, tail calls, `__sprocall` frames as `pcall` frames, and the yielding native at the top. Frames with temporaries below the callee, unknown prototypes, native frames in the middle and unregistered permanents are refused with the frame number. An open upvalue gives its cell the slot's value; the frame's own local stays a separate copy, listed in `Imported::aliased`. `tests/import/` rebuilds the 5.3 stack for each shape, restores it in a fresh 5.4 state and compares the rest of the run with the uninterrupted run.
 - **Whole-save import and permanent metatables: done.** `import::import_threads(&[SavedThread], &SavedHeap, &ImportSources, &Permanents, &PermanentMap)` converts any number of threads that share one heap in one pass (see below). A table's metatable is a snapshot table or the name of a permanent, and capture, import and restore handle both.
 - **Frame fidelity: anonymous functions in any position, yields inside numeric `for` bodies and locals shared with closures: done for capture and restore.** A frame local that a closure captured is found at capture by assigning a unique table to the local and searching the upvalue cells of the captured closures for it, and a restore joins those closures to the local again. The import of Lua 5.3 saves still copies open upvalues.
-- **Engine integration and frames inside `pcall` and `xpcall`: not started.**
+- **Frames inside `pcall` and `xpcall`: done for capture and restore.** A thread suspended in a protected call is captured and restored (see below).
+- **Engine integration: not started.**
 
 ## Normalizing a chunk
 
@@ -112,7 +113,7 @@ let snapshot = capture(&lua, &debug, &thread, &permanents)?;
 let json = serde_json::to_string(&snapshot)?;
 ```
 
-`capture` accepts a coroutine whose top frame is a yielding native function (`coroutine.yield` or a native named in the permanents) and whose other frames are Lua functions in normalized code. For each frame the snapshot holds the function (chunk name and the lines of its definition), the closure, the site number from `__lrs`, every named local in stack order (generated `__lr` locals included), the varargs, the source line and the call the frame waits in. Frames run from the outermost call to the innermost.
+`capture` accepts a coroutine whose top frame is a yielding native function (`coroutine.yield` or a native named in the permanents) and whose other frames are Lua functions in normalized code, or a `pcall` or `xpcall` between two of them. For each frame the snapshot holds the function (chunk name and the lines of its definition), the closure, the site number from `__lrs`, every named local in stack order (generated `__lr` locals included), the varargs, the source line and the call the frame waits in. Frames run from the outermost call to the innermost.
 
 Values are data:
 
@@ -183,7 +184,7 @@ Limits of this step:
 - A call with a nested last-argument call, such as `f(a, g())`, has one site, and the continuation takes `g` as the pending call. A coroutine waiting in `f` is continued wrongly.
 - A continuation reports positions in error messages by the lines of its generated source. Re-entered loops can print their body on a later line than the original. Tests raise errors with level 0.
 - A loop re-entered in the middle of an iteration is generated twice, and the copy that runs later iterations sits on later lines than the original. A closure that copy creates is saved under the lines of the function it stands for: the restore tells `capture` where each such function moved. If the new lines belong to a function of the source, the restore of that frame is refused.
-- Frames inside `pcall` and `xpcall` are not captured yet (capture refuses native frames), so the `PROTECTED_NEXT` path is only reached for errors raised after a restore, not for a restore from inside the protected call.
+- Capture accepts a `pcall` or `xpcall` frame only when its function is the host's `pcall` or `xpcall` (the permanents of those names, or the globals when there are none) and it sits between two Lua frames. An alias such as `sprocall = pcall` is the same function and is accepted. A protected call that is the outermost frame of the coroutine, one that calls a native function directly (`pcall(coroutine.yield)`) and any other native frame in the middle are refused. An `xpcall` message handler is saved like any other value, so a native handler must be a permanent.
 
 ## License
 
