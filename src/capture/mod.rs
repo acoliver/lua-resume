@@ -1,5 +1,9 @@
 //! Captures a coroutine suspended in normalized code as a [`Snapshot`].
 //!
+//! A coroutine that was created and never resumed has no frames; it is captured as the function
+//! it starts with, read with the debug table's `unstartedfunction`, and a restore creates a
+//! coroutine from that function. Arguments of its first resume are the caller's.
+//!
 //! The coroutine's frames are read with the host's [`Debug`] capability: for each Lua frame
 //! its function (chunk name and lines), the call site in `__lrs`, every named local and the
 //! varargs. The top frame must be the yielding native function. Values become data: tables

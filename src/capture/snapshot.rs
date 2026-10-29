@@ -152,6 +152,9 @@ pub struct Cell {
 pub enum ThreadData {
     /// Suspended in normalized code; frames run from the outermost call to the innermost.
     Suspended { frames: Vec<Frame> },
+    /// Created and never resumed: it starts by calling this function, a closure or permanent,
+    /// with the arguments of its first resume. The caller supplies those, so none are saved.
+    Unstarted { function: Value },
     /// Finished, or ended by an error.
     Dead,
 }

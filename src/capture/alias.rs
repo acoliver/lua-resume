@@ -38,7 +38,7 @@ impl Capturer<'_> {
     fn frame_locals(&self, probe: &Probe) -> Option<&Vec<super::Local>> {
         match self.snapshot.threads.get(probe.thread_id)? {
             ThreadData::Suspended { frames } => frames.get(probe.frame).map(|frame| &frame.locals),
-            ThreadData::Dead => None,
+            ThreadData::Unstarted { .. } | ThreadData::Dead => None,
         }
     }
 

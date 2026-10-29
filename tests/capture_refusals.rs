@@ -3,7 +3,7 @@
 mod capture_support;
 
 use capture_support::{Host, host};
-use lua_resume::capture::{CaptureError, Permanents, Snapshot};
+use lua_resume::capture::{CaptureError, Permanents, Snapshot, ThreadData, Value as Saved};
 use mlua::{Thread, ThreadStatus, Value};
 
 fn raw(host: &Host, source: &str, name: &str) {
@@ -192,14 +192,39 @@ fn a_top_frame_that_is_not_a_known_yield_is_refused_and_a_named_native_is_accept
 }
 
 #[test]
-fn coroutines_that_are_not_suspended_are_refused() {
+fn a_coroutine_that_has_not_started_is_saved_as_its_function() {
+    // The original engine saves threads that were created and not yet run, so a game can be
+    // saved before its first scheduler moment. Capture used to refuse them with `NotStarted`.
     let host = host();
     host.run("function f() coroutine.yield() end", "state.lua");
     let fresh = host.lua.create_thread(host.global("f")).unwrap();
-    assert!(matches!(
-        refused(&host, &fresh),
-        CaptureError::NotStarted { .. }
-    ));
+    let snapshot = host.capture(&fresh).unwrap();
+    let ThreadData::Unstarted {
+        function: Saved::Closure(closure),
+    } = &snapshot.threads[0]
+    else {
+        panic!("unexpected {:?}", snapshot.threads[0]);
+    };
+    assert_eq!(snapshot.closures[*closure].function.chunk, "=state.lua");
+    assert_eq!(fresh.status(), ThreadStatus::Resumable);
+}
+
+#[test]
+fn an_unstarted_coroutine_of_an_unnamed_native_function_is_refused_with_its_path() {
+    let host = host();
+    let native = host.lua.create_function(|_, ()| Ok(())).unwrap();
+    let fresh = host.lua.create_thread(native).unwrap();
+    let error = refused(&host, &fresh);
+    let CaptureError::NativeFunction { path } = error else {
+        panic!("unexpected {error}");
+    };
+    assert_eq!(path, "thread > function");
+}
+
+#[test]
+fn coroutines_that_are_not_suspended_are_refused() {
+    let host = host();
+    host.run("function f() coroutine.yield() end", "state.lua");
     let thread = host.started("f", ());
     thread.resume::<()>(()).unwrap();
     assert!(matches!(

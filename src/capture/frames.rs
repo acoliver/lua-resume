@@ -80,7 +80,7 @@ impl Capturer<'_> {
         root: bool,
     ) -> Result<ThreadData, CaptureError> {
         let state = match thread.status() {
-            ThreadStatus::Resumable => return self.frames(thread, path).map(wrap),
+            ThreadStatus::Resumable => return self.resumable(thread, path),
             ThreadStatus::Running => "running",
             ThreadStatus::Finished | ThreadStatus::Error if !root => return Ok(ThreadData::Dead),
             ThreadStatus::Finished => "finished",
@@ -92,15 +92,31 @@ impl Capturer<'_> {
         })
     }
 
-    /// Frames from the outermost call to the innermost Lua call.
-    fn frames(&mut self, thread: &Thread, path: &Path) -> Result<Vec<Frame>, CaptureError> {
+    /// A suspended coroutine: its frames, or the function it starts with when it never ran.
+    fn resumable(&mut self, thread: &Thread, path: &Path) -> Result<ThreadData, CaptureError> {
         let Some(top) = self.debug.level(thread, 0)? else {
-            return Err(CaptureError::NotStarted {
-                path: path.render(),
-            });
+            let function = self.debug.unstarted_function(thread)?.ok_or_else(|| {
+                CaptureError::NotSuspended {
+                    path: path.render(),
+                    state: "finished",
+                }
+            })?;
+            let place = path.child("function".to_owned());
+            let function = self.value(&mlua::Value::Function(function), &place)?;
+            return Ok(ThreadData::Unstarted { function });
         };
+        self.frames(thread, path, &top).map(wrap)
+    }
+
+    /// Frames from the outermost call to the innermost Lua call; `top` is the innermost level.
+    fn frames(
+        &mut self,
+        thread: &Thread,
+        path: &Path,
+        top: &Info,
+    ) -> Result<Vec<Frame>, CaptureError> {
         let mut walk = Walk {
-            callee: self.top_callee(&top, path)?,
+            callee: self.top_callee(top, path)?,
             hidden: 0,
             inner_lua: false,
             open: None,

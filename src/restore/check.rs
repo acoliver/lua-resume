@@ -128,12 +128,16 @@ fn check_data(restorer: &Restorer, found: &mut Vec<Refusal>) {
         report(format!("root `{root}`"), value);
     }
     for (thread, data) in snapshot.threads.iter().enumerate() {
-        if let ThreadData::Suspended { frames } = data {
-            for (index, frame) in frames.iter().enumerate() {
-                for value in frame_values(frame) {
-                    report(format!("thread {thread} frame {index}"), value);
+        match data {
+            ThreadData::Suspended { frames } => {
+                for (index, frame) in frames.iter().enumerate() {
+                    for value in frame_values(frame) {
+                        report(format!("thread {thread} frame {index}"), value);
+                    }
                 }
             }
+            ThreadData::Unstarted { function } => report(format!("thread {thread}"), function),
+            ThreadData::Dead => {}
         }
     }
 }
