@@ -31,7 +31,8 @@ Under construction; [#1](https://github.com/acoliver/lua-resume/issues/1) tracks
 - **Continuation generation: done for the shapes in old Stranded saves, except backward gotos.** `continuation::continuation_source` generates, from a normalized chunk, the function that finishes a frame from one call site (see below).
 - **Capture of suspended coroutines and the snapshot model: done.** `capture::capture` reads a coroutine suspended in normalized code into a serializable `Snapshot` (see below). It uses the host's debug library through a `Debug` capability, and the `lua-resume-debug` crate creates a state in which only the host can reach that library.
 - **Restore: done for coroutines that capture accepts.** `restore::restore(&Lua, &Debug, &Snapshot, &Sources, &Permanents)` rebuilds a suspended coroutine (see below). The round-trip suite saves five scripts at all 20 of their yields, restores each in a fresh Lua state through JSON, and compares the rest of the run with the uninterrupted run.
-- **Import of Lua 5.3 saved threads: done for statement-level calls.** `import::import_thread` turns a host-decoded Lua 5.3 thread (stack, `CallInfo` records, open upvalues, closures, prototypes) into a `Snapshot` that `restore` accepts: function identity and call site from the prototype and call ordinal, locals by name, varargs, numeric and generic `for` registers, tail calls, `__sprocall` frames as `pcall` frames, and the yielding native at the top. Frames with temporaries below the callee, unknown prototypes, native frames in the middle and unregistered permanents are refused with the frame number. An open upvalue gives its cell the slot's value; the frame's own local stays a separate copy, listed in `Imported::aliased`. `tests/import_cases.rs` rebuilds the 5.3 stack for each shape, restores it in a fresh 5.4 state and compares the rest of the run with the uninterrupted run.
+- **Import of Lua 5.3 saved threads: done for statement-level calls.** `import::import_thread` and `import::import_threads` turn host-decoded Lua 5.3 threads (stack, `CallInfo` records, open upvalues, closures, prototypes) into a `Snapshot` that `restore` (one thread) or `restore_all` accepts: function identity and call site from the prototype and call ordinal, locals by name, varargs, numeric and generic `for` registers, tail calls, `__sprocall` frames as `pcall` frames, and the yielding native at the top. Frames with temporaries below the callee, unknown prototypes, native frames in the middle and unregistered permanents are refused with the frame number. An open upvalue gives its cell the slot's value; the frame's own local stays a separate copy, listed in `Imported::aliased`. `tests/import_cases.rs` rebuilds the 5.3 stack for each shape, restores it in a fresh 5.4 state and compares the rest of the run with the uninterrupted run.
+- **Whole-save import and permanent metatables: done.** `import::import_threads(&[SavedThread], &SavedHeap, &ImportSources, &Permanents, &PermanentMap)` converts any number of threads that share one heap in one pass (see below). A table's metatable is a snapshot table or the name of a permanent, and capture, import and restore handle both.
 - **Frame fidelity: anonymous functions in any position, yields inside numeric `for` bodies and locals shared with closures: done for capture and restore.** A frame local that a closure captured is found at capture by assigning a unique table to the local and searching the upvalue cells of the captured closures for it, and a restore joins those closures to the local again. The import of Lua 5.3 saves still copies open upvalues.
 - **Engine integration and frames inside `pcall` and `xpcall`: not started.**
 
@@ -120,6 +121,32 @@ Limits of this step:
 - Two different functions with the same chunk name and lines are told apart only by parameter count, vararg flag, upvalue count and the set of lines with code. Functions that match on all of these are not detected.
 - Dead `(temporary)` slots that a vararg callee leaves in its caller's stack are recognized by count and skipped. Any other temporary is refused.
 - A to-be-closed local that holds nil, false or userdata is not detected.
+
+## Importing a whole save
+
+A save holds one heap and many threads. Calling `import_thread` once per thread converts the heap for every call, which grows with threads times objects. `import_threads` converts the heap once:
+
+```rust
+use lua_resume::import::{import_threads, PermanentMap};
+use lua_resume::restore::restore_all;
+
+heap.roots.push(("data".to_owned(), Value::Table(root_table)));
+let snapshot = import_threads(&threads, &heap, &sources, &permanents, &PermanentMap::default())?;
+let restored = restore_all(&lua, &debug, &snapshot, &sources.restore_sources(), &permanents)?;
+// restored.threads[i] is threads[i]; restored.roots[0] is the table `data`.
+```
+
+- `snapshot.threads[0..n]` are the given threads in order and `snapshot.captured` lists them. `Value::Thread(i)` means `threads[i]` of the snapshot, so `heap.threads` (coroutines the threads reach but that are not imported) start at index `n`.
+- Tables, closures and upvalue cells of the heap exist once. A table that two threads and a root hold is one table after `restore_all`, and a closure in a table shares its upvalue with the frame whose local it is.
+- `SavedHeap::roots` names data the host wants back, in order. A duplicate name is refused.
+- A thread that cannot be imported is reported as `ImportError::Thread` with its index and the frame error inside.
+- `import_thread` is `import_threads` for one thread, and its errors are not wrapped.
+
+## Metatables that are permanents
+
+`TableData::metatable` is `Option<Metatable>`. `Metatable::Table(i)` is `tables[i]` of the snapshot. `Metatable::Permanent(name)` is a table the host registered in its `Permanents`, such as a class table. Capture writes the name when a table's metatable is a registered permanent, and the table is not entered, as for any other permanent. Restore calls `setmetatable` with the host's own table, so identity with the host's class holds after the restore. A name that is not registered, or whose value is not a table, is refused. An import renames a permanent metatable through `PermanentMap` and checks it like any other permanent.
+
+In JSON, `Metatable::Table(3)` is the number `3` and `Metatable::Permanent("class:Name")` is a string, so snapshots written before this change load unchanged.
 
 ## Restoring a coroutine
 

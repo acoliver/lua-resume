@@ -5,7 +5,9 @@ use std::cmp::Ordering;
 use mlua::{Function, Table, Thread, Value as Lua};
 
 use super::path::Path;
-use super::{CaptureError, Capturer, Cell, ClosureData, TableData, ThreadData, UpvalueRef, Value};
+use super::{
+    CaptureError, Capturer, Cell, ClosureData, Metatable, TableData, ThreadData, UpvalueRef, Value,
+};
 
 /// A table or coroutine whose contents are read after its index is assigned, so that large or
 /// deeply nested data does not recurse.
@@ -176,11 +178,17 @@ impl Capturer<'_> {
             let key = self.value(key, &here.child("key".to_owned()))?;
             entries.push((key, self.value(value, &here)?));
         }
-        let metatable = table
-            .metatable()
-            .map(|meta| self.table_id(&meta, &path.child("metatable".to_owned())));
+        let metatable = table.metatable().map(|meta| self.metatable(&meta, path));
         self.snapshot.tables[id] = TableData { entries, metatable };
         Ok(())
+    }
+
+    /// A registered permanent is saved by name, as the engine does with class tables.
+    fn metatable(&mut self, meta: &Table, path: &Path) -> Metatable {
+        match self.permanents.name_of(&Lua::Table(meta.clone())) {
+            Some(name) => Metatable::Permanent(name.to_owned()),
+            None => Metatable::Table(self.table_id(meta, &path.child("metatable".to_owned()))),
+        }
     }
 }
 
