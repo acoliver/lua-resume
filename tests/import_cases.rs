@@ -37,8 +37,11 @@ fn start(host: &Host, name: &str) -> Thread {
 
 /// What the function yields and returns when it runs from the start to the end.
 fn uninterrupted(name: &str, args: &str, inputs: &[&str]) -> Vec<String> {
-    let host = host();
-    let thread = start(&host, name);
+    uninterrupted_in(&host(), name, args, inputs)
+}
+
+fn uninterrupted_in(host: &Host, name: &str, args: &str, inputs: &[&str]) -> Vec<String> {
+    let thread = start(host, name);
     let mut events = vec![host.step(&thread, args)];
     for input in inputs {
         assert!(events.last().unwrap().starts_with("yield:"), "{events:?}");
@@ -54,6 +57,13 @@ fn resumed(world: &World, name: &str, args: &str, inputs: &[&str], at: usize) {
 
 fn resumed_in(fresh: &Host, world: &World, name: &str, args: &str, inputs: &[&str], at: usize) {
     let expected = uninterrupted(name, args, inputs);
+    let rest = restored_events(fresh, world, &inputs[at..]);
+    assert_eq!(rest[..], expected[at + 1..], "{name}");
+}
+
+/// Imports `world`, restores it in `fresh` with the operator hooks `fresh` loaded its source
+/// with, and returns what it yields and returns for each of `inputs`.
+fn restored_events(fresh: &Host, world: &World, inputs: &[&str]) -> Vec<String> {
     let imported = import_thread(
         &world.thread,
         &world.heap,
@@ -62,19 +72,21 @@ fn resumed_in(fresh: &Host, world: &World, name: &str, args: &str, inputs: &[&st
         &PermanentMap::default(),
     )
     .unwrap();
+    let restore_sources = sources(fresh)
+        .restore_sources()
+        .with_hooks(fresh.hooks.clone());
     let thread = restore(
         &fresh.lua,
         &fresh.debug,
         &imported.snapshot,
-        &sources(fresh).restore_sources(),
+        &restore_sources,
         &fresh.permanents,
     )
     .unwrap();
-    let rest: Vec<String> = inputs[at..]
+    inputs
         .iter()
         .map(|input| fresh.step(&thread, input))
-        .collect();
-    assert_eq!(rest[..], expected[at + 1..], "{name}");
+        .collect()
 }
 
 fn list(values: &[i64]) -> TableData {
@@ -830,5 +842,34 @@ fn check_restore_reports_a_frame_whose_chunk_is_unknown() {
     assert!(
         places.iter().any(|p| p.starts_with("thread 0 frame 0")),
         "{places:?}"
+    );
+}
+
+/// `halves` divides before each of its two yields and after the last. Lua 5.3 compiled the
+/// divisions as `OP_DIV`, so the yields are call ordinals 0 and 1 there; the 5.4 source loaded
+/// with the division hook calls the host function but has the same two sites.
+#[test]
+fn call_ordinals_ignore_divisions_that_the_host_prints_as_calls() {
+    let args = "5";
+    let inputs = ["10", "6"];
+    let hooked = Host::hooked(SOURCE);
+    let expected = uninterrupted_in(&Host::hooked(SOURCE), "halves", args, &inputs);
+    assert_eq!(expected[0], "yield:\"half\",2", "5 / 2 divides as integers");
+    assert_eq!(expected[2], "return:3,5", "6 / 2 and 10 / 2");
+    // Stopped at the first yield, with `n` and `half` below the callee.
+    let mut world = World::new();
+    let halves = world.closure(line_of("halves"), &[]);
+    world.frame(halves, 0, &[int(5), int(2)], yield_fn());
+    world.yielded();
+    assert_eq!(restored_events(&hooked, &world, &inputs), expected[1..]);
+    // Stopped at the second yield, after `got` was set to 10.
+    let mut world = World::new();
+    let halves = world.closure(line_of("halves"), &[]);
+    world.frame(halves, 1, &[int(5), int(2), int(10)], yield_fn());
+    world.yielded();
+    let hooked = Host::hooked(SOURCE);
+    assert_eq!(
+        restored_events(&hooked, &world, &inputs[1..]),
+        expected[2..]
     );
 }

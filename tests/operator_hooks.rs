@@ -6,10 +6,7 @@ mod restore_support;
 
 use lua_resume::rewrite::check_normal_form;
 use lua_resume::syntax::{OperatorHooks, parse, print, print_with};
-use restore_support::{Script, round_trip_all, run};
-
-#[path = "support/mod.rs"]
-mod normalizer;
+use restore_support::{Host, Script, round_trip_all, run};
 
 const EXPRESSIONS: Script = Script {
     name: "division inside expressions, loops and calls, with yields after it",
@@ -71,8 +68,7 @@ fn operands_are_evaluated_once_in_order() {
 
 #[test]
 fn a_division_adds_no_call_site() {
-    let source = ORDER.source;
-    let tree = normalizer::normalize_source(source.as_bytes()).unwrap();
+    let tree = Host::for_script(&ORDER).tree;
     check_normal_form(&tree).unwrap();
     let hooks = OperatorHooks::none().with_divide("__lr_div").unwrap();
     let plain = print(&tree);
@@ -94,7 +90,7 @@ fn a_division_adds_no_call_site() {
 
 #[test]
 fn without_hooks_the_printed_source_is_unchanged() {
-    let tree = normalizer::normalize_source(EXPRESSIONS.source.as_bytes()).unwrap();
+    let tree = Host::for_script(&EXPRESSIONS).tree;
     assert_eq!(print_with(&tree, &OperatorHooks::none()), print(&tree));
     let (_, _, plain) = run(
         &Script {

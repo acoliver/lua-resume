@@ -66,6 +66,14 @@ Lua sometimes reads an assignment's table before its right-hand side and sometim
 
 The caller must supply a dump of exactly the same original chunk as the AST. Count and line validation detect mapping inconsistencies; they do not authenticate the source. Analysis is discarded after loading. Bytecode never goes in save data.
 
+### Operator hooks
+
+A game VM can give an operator other semantics than stock Lua 5.4. Stranded's Lua 5.3 VM divides two integers as integers, for example. A host handles that by printing the source it loads with `syntax::print_with(&tree, &hooks)`, where `OperatorHooks::none().with_divide("__lr_div")?` writes each binary `/` as `(__lr_div(a, b))`, a call of a global host function.
+
+The hook is a printing option and the syntax tree keeps `a / b`. Normalization, `__lrs` site numbers, call ordinals, `FunctionIndex`, the mapping to Lua 5.3 prototypes (where `/` is `OP_DIV`) and the stock Lua 5.4 dump handed to `Compiled::from_dump` therefore never count the host call. Operands are evaluated left, then right, once, as for the operator. A restore must print the functions it generates the same way: `Sources::with_hooks(hooks)`, `continuation_source_hooked` and `function_source_hooked` take the hooks, and `ImportSources::restore_sources().with_hooks(hooks)` does for imported saves.
+
+The host function must return exactly one value and must not yield. A coroutine is then never stopped inside it, and capture never sees its frame. The name must start with the reserved `__lr` prefix so that no game variable shadows it. Constant folding is the host's concern: `1 / 2` is printed as a call and the hook decides the result.
+
 ### Constraints
 
 - The dump reader supports the official Lua 5.4 format with 32-bit instructions, little-endian 64-bit integers and IEEE 64-bit numbers. Stripped and debug dumps are accepted. Custom compiler formats are unsupported.
