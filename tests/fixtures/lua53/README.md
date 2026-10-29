@@ -20,3 +20,7 @@ statements. `cases.luac` is its stock Lua 5.3.6 compile with chunk name `@Lua/ca
 `luac53` driver:
 
     luac53 @Lua/cases.lua cases.lua cases.luac
+
+The last function of `cases.lua`, `stash`, uses two chunk-level locals. Lua 5.3 numbers its upvalues
+`seed, _ENV, count`, and the normalized source numbers them `_ENV, seed, count`. The import tests use it to
+check that a restore binds upvalues by name. It was appended, so earlier line numbers are unchanged.
