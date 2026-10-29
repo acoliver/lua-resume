@@ -3,7 +3,7 @@
 use super::ContinuationError;
 use super::loops::{numeric_for, repeat_loop, while_loop};
 use super::path::{Step, inner_blocks};
-use super::site::{site_return, site_stat};
+use super::site::{Pending, site_return, site_stat};
 use crate::syntax::ast::{Block, Stat, StatKind};
 
 /// The statements that finish `block`, entered at the step `steps[depth]`.
@@ -11,20 +11,21 @@ pub(super) fn resume_block(
     block: &Block,
     steps: &[Step],
     (depth, binds): (usize, &[Stat]),
+    pending: Pending,
 ) -> Result<Block, ContinuationError> {
     let step = steps[depth];
     let mut ret = block.ret.clone();
     let mut entered = Vec::new();
     if depth + 1 < steps.len() {
         let container = &block.stats[step.index];
-        entered.push(resume_container(container, steps, (depth, binds))?);
+        entered.push(resume_container(container, steps, (depth, binds), pending)?);
     } else if step.index == block.stats.len() {
-        let pending = block.ret.as_ref().expect("the step names a return");
+        let call = block.ret.as_ref().expect("the step names a return");
         entered.extend(binds.iter().cloned());
-        ret = Some(site_return(pending)?);
+        ret = Some(site_return(call, pending)?);
     } else {
         entered.extend(binds.iter().cloned());
-        entered.push(site_stat(&block.stats[step.index])?);
+        entered.push(site_stat(&block.stats[step.index], pending)?);
     }
     check_labels(block, step.index)?;
     let mut stats = entered;
@@ -71,24 +72,25 @@ fn resume_container(
     stat: &Stat,
     steps: &[Step],
     (depth, binds): (usize, &[Stat]),
+    pending: Pending,
 ) -> Result<Stat, ContinuationError> {
     let next = (depth + 1, binds);
     let sub_block = resume_block;
     let kind = match &stat.kind {
-        StatKind::Do(body) => StatKind::Do(sub_block(body, steps, next)?),
+        StatKind::Do(body) => StatKind::Do(sub_block(body, steps, next, pending)?),
         StatKind::If { arms, otherwise } => {
             let body = match arms.get(steps[depth].branch) {
                 Some(arm) => &arm.body,
                 None => otherwise.as_ref().expect("the step names an arm"),
             };
-            StatKind::Do(sub_block(body, steps, next)?)
+            StatKind::Do(sub_block(body, steps, next, pending)?)
         }
         StatKind::While { cond, body } => {
-            let rest = sub_block(body, steps, next)?;
+            let rest = sub_block(body, steps, next, pending)?;
             while_loop(cond, &rest, body, depth)
         }
         StatKind::Repeat { body, cond } => {
-            let rest = sub_block(body, steps, next)?;
+            let rest = sub_block(body, steps, next, pending)?;
             repeat_loop(cond, &rest, body, depth)
         }
         StatKind::NumericFor {
@@ -98,7 +100,7 @@ fn resume_container(
             body,
             ..
         } => {
-            let rest = sub_block(body, steps, next)?;
+            let rest = sub_block(body, steps, next, pending)?;
             numeric_for(var, (limit, step.as_ref()), &rest, body, depth)?
         }
         _ => {

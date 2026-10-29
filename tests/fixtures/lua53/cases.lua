@@ -80,3 +80,14 @@ function stash(k)
   count = count + 1
   return count, seed[k]
 end
+function pick(x)
+  return x
+end
+function guarded(n)
+  local total = 0
+  while total < n do
+    local ok, v = pcall(leaf, pick(total))
+    total = total + v
+  end
+  return total
+end

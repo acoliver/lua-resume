@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use lua_resume::continuation::{FunctionKey, continuation_source};
+use lua_resume::continuation::{FunctionKey, Pending, continuation_source_with};
 use lua_resume::syntax::ast::{Block, Stat, StatKind};
 use lua_resume::syntax::{parse, print};
 use mlua::{Function, Lua, Table};
@@ -177,7 +177,15 @@ fn original(case: &Case, tree: &Block) -> Run {
 fn resumed(case: &Case, tree: &Block, snap: &Snap, locals: &[String], rest: &[&str]) -> Run {
     let lua = Lua::new();
     setup(&lua, case, tree);
-    let source = continuation_source(tree, case.key, snap.site, locals, &[], &[]).unwrap();
+    let source = continuation_source_with(
+        tree,
+        case.key,
+        (snap.site, Pending::Innermost),
+        locals,
+        &[],
+        &[],
+    )
+    .unwrap();
     let continuation: Function = lua.load(&source).eval().unwrap();
     let load: Function = lua.globals().get("__load").unwrap();
     let restore: Function = lua.globals().get("__restore").unwrap();

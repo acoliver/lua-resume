@@ -215,6 +215,22 @@ fn a_yieldable_pcall_becomes_a_protected_frame() {
     resumed(&world, "protected", "6", &["20"], 0);
 }
 
+#[test]
+fn a_protected_call_with_a_call_in_its_arguments_resumes_in_the_outer_call() {
+    let mut world = World::new();
+    let leaf_cell = world.cell(Value::Nil);
+    let leaf = world.closure(line_of("leaf"), &[]);
+    world.heap.cells[leaf_cell].value = Value::Closure(leaf);
+    let guarded = world.closure(line_of("guarded"), &[("leaf", leaf_cell)]);
+    let sprocall = Value::Permanent("__sprocall".to_owned());
+    // `pick` is call 0 and `pcall` is call 1; the frame waits in `pcall`.
+    world.frame(guarded, 1, &[int(10), int(0)], sprocall);
+    world.protected_call();
+    world.frame(leaf, 0, &[int(0)], yield_fn());
+    world.yielded();
+    resumed(&world, "guarded", "10", &["5", "3"], 0);
+}
+
 /// A frame of `function` stopped at its yield with `count` open as an upvalue of the nested
 /// function `closure`. Returns the world and the cell of the upvalue.
 fn counter_world(function: &str, closure: &str) -> (World, usize) {

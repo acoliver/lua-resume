@@ -24,3 +24,7 @@ statements. `cases.luac` is its stock Lua 5.3.6 compile with chunk name `@Lua/ca
 The last function of `cases.lua`, `stash`, uses two chunk-level locals. Lua 5.3 numbers its upvalues
 `seed, _ENV, count`, and the normalized source numbers them `_ENV, seed, count`. The import tests use it to
 check that a restore binds upvalues by name. It was appended, so earlier line numbers are unchanged.
+
+`pick` and `guarded` were appended after that. `guarded` calls `pcall(leaf, pick(total))` in a loop, so the
+protected call has a call in its last argument. `cases.luac` was recompiled with the same driver; the
+earlier part of the file compiles to the same bytes as before.
