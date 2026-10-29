@@ -36,6 +36,7 @@ pub use sources::Sources;
 use mlua::{Function, Lua, Thread, Value};
 
 use crate::capture::{Debug, Permanents, Snapshot};
+use crate::continuation::PROTECTED_NEXT;
 
 /// What [`restore_all`] rebuilt from one snapshot. All of it shares one graph.
 pub struct Restored {
@@ -91,7 +92,7 @@ pub(crate) struct Helpers {
     pub(crate) protect: Function,
 }
 
-const HELPERS: &str = "local unpack, pcall = table.unpack, pcall
+const HELPERS: &str = "local unpack = table.unpack
 local function maker(f, vals, nxt, varargs, n)
   return function() return f(vals, nxt, unpack, unpack(varargs, 1, n)) end
 end
@@ -102,15 +103,13 @@ local function cell()
   local v
   return function() return v end
 end
-local function protect(inner)
-  return function() return pcall(inner) end
-end
-return maker, entry, cell, protect";
+return maker, entry, cell";
 
 impl Helpers {
     pub(crate) fn load(lua: &Lua) -> mlua::Result<Self> {
-        let (maker, entry, cell, protect): (Function, Function, Function, Function) =
+        let (maker, entry, cell): (Function, Function, Function) =
             lua.load(HELPERS).set_name("=lua-resume").eval()?;
+        let protect = lua.load(PROTECTED_NEXT).set_name("=lua-resume").eval()?;
         Ok(Self {
             maker,
             entry,

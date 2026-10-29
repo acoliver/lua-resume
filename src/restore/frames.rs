@@ -5,7 +5,8 @@ use mlua::{Function, MultiValue, ThreadStatus};
 use super::build::{Bind, Restorer, function_error, upvalue_names};
 use super::{RestoreError, Restored};
 use crate::capture::{
-    Callee, Frame, FunctionId, Origin, ThreadData, register_origin, register_relocation,
+    Callee, Frame, FunctionId, Origin, ThreadData, register_origin, register_protector,
+    register_relocation,
 };
 use crate::continuation::{
     Continuation, ContinuationError, Pending, continuation_hooked, defines_function,
@@ -115,12 +116,23 @@ impl Restorer<'_> {
             },
             (Callee::Lua(_), Some(inner)) => Ok(inner),
             (Callee::Native(name), Some(inner)) if name == "pcall" => {
-                Ok(self.helpers.protect.call(inner)?)
+                self.protected(inner, mlua::Value::Nil)
+            }
+            (Callee::Xpcall { handler }, Some(inner)) => {
+                self.protected(inner, self.to_lua(handler)?)
             }
             _ => Err(RestoreError::Malformed(
                 "a frame's pending call does not match the next frame".to_owned(),
             )),
         }
+    }
+
+    /// The `__lr_next` of a frame waiting in `pcall`, or in `xpcall` with a message handler.
+    /// A later capture finds the function it builds as a frame to skip.
+    fn protected(&self, inner: Function, handler: mlua::Value) -> Result<Function, RestoreError> {
+        let function: Function = self.helpers.protect.call((inner, handler))?;
+        register_protector(self.lua, &function);
+        Ok(function)
     }
 
     /// The generated continuation function of a frame, bound to its closure's cells.

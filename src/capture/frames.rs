@@ -49,6 +49,28 @@ fn live_copies(found: Vec<Found>, saved: &[String]) -> Vec<Found> {
     kept
 }
 
+/// Where the walk of a thread's frames stands between one level and the next.
+struct Walk {
+    /// What the frame at the next level waits in.
+    callee: Callee,
+    hidden: usize,
+    /// Whether the previous level was a Lua frame, which a `pcall` needs inside it.
+    inner_lua: bool,
+    /// A `pcall` or `xpcall` seen whose enclosing Lua frame has not been reached.
+    open: Option<Open>,
+    /// Frames innermost first.
+    frames: Vec<Frame>,
+    probes: Vec<(i64, Vec<i64>)>,
+}
+
+/// A `pcall` or `xpcall` frame that must be enclosed by a Lua frame.
+struct Open {
+    path: String,
+    name: String,
+    /// Whether the function a restore built to call the inner frame in it may come next.
+    protector_next: bool,
+}
+
 impl Capturer<'_> {
     /// The state of `thread`: its frames when suspended, `Dead` when finished.
     pub(super) fn thread_data(
@@ -77,32 +99,103 @@ impl Capturer<'_> {
                 path: path.render(),
             });
         };
-        let mut callee = self.top_callee(&top, path)?;
-        let mut hidden = 0;
-        let mut frames = Vec::new();
-        let mut probes = Vec::new();
+        let mut walk = Walk {
+            callee: self.top_callee(&top, path)?,
+            hidden: 0,
+            inner_lua: false,
+            open: None,
+            frames: Vec::new(),
+            probes: Vec::new(),
+        };
         let mut level = 1;
         while let Some(info) = self.debug.level(thread, level)? {
             let here = path.child(format!("level {level}"));
-            if info.what == "C" {
-                return Err(CaptureError::NativeFrame {
-                    path: here.render(),
-                    name: info.name.unwrap_or_else(|| "?".to_owned()),
-                });
-            }
-            let origin = self.origins.get(&info.func.to_pointer().addr()).cloned();
-            let pending = (callee, hidden);
-            let (frame, slots) =
-                self.frame((thread, level), &info, origin.as_ref(), pending, &here)?;
-            callee = Callee::Lua(frame.function.clone());
-            hidden = hidden_slots(&info, origin.is_some(), &frame);
-            frames.push(frame);
-            probes.push((level, slots));
+            self.walk_level((thread, level), &info, &mut walk, &here)?;
             level += 1;
         }
-        frames.reverse();
-        self.add_probes(thread, probes);
-        Ok(frames)
+        if let Some(open) = walk.open {
+            return Err(CaptureError::NativeFrame {
+                path: open.path,
+                name: open.name,
+            });
+        }
+        walk.frames.reverse();
+        self.add_probes(thread, walk.probes);
+        Ok(walk.frames)
+    }
+
+    /// Reads one level of the stack: a Lua frame, a `pcall` or `xpcall` that encloses the
+    /// frames walked so far, or the function a restore built to run a frame in one of them.
+    fn walk_level(
+        &mut self,
+        (thread, level): (&Thread, i64),
+        info: &Info,
+        walk: &mut Walk,
+        here: &Path,
+    ) -> Result<(), CaptureError> {
+        if info.what == "C" {
+            let (name, callee) =
+                self.protected_call((thread, level), info, walk.inner_lua, here)?;
+            walk.callee = callee;
+            walk.hidden = 0;
+            walk.inner_lua = false;
+            walk.open = Some(Open {
+                path: here.render(),
+                name,
+                protector_next: true,
+            });
+            return Ok(());
+        }
+        let address = info.func.to_pointer().addr();
+        if let Some(open) = walk.open.as_mut()
+            && open.protector_next
+            && self.protectors.contains(&address)
+        {
+            open.protector_next = false;
+            return Ok(());
+        }
+        let origin = self.origins.get(&address).cloned();
+        let pending = (walk.callee.clone(), walk.hidden);
+        let (frame, slots) = self.frame((thread, level), info, origin.as_ref(), pending, here)?;
+        walk.callee = Callee::Lua(frame.function.clone());
+        walk.hidden = hidden_slots(info, origin.is_some(), &frame);
+        walk.frames.push(frame);
+        walk.probes.push((level, slots));
+        walk.inner_lua = true;
+        walk.open = None;
+        Ok(())
+    }
+
+    /// The pending call of the frame outside the C frame `info`, which must be the host's
+    /// `pcall` or `xpcall` called by a Lua frame. Its name is returned for the refusal that
+    /// follows if no Lua frame calls it. An `xpcall` keeps its message handler, the second
+    /// value on its C stack.
+    fn protected_call(
+        &mut self,
+        (thread, level): (&Thread, i64),
+        info: &Info,
+        inner_lua: bool,
+        here: &Path,
+    ) -> Result<(String, Callee), CaptureError> {
+        let refuse = || CaptureError::NativeFrame {
+            path: here.render(),
+            name: info.name.clone().unwrap_or_else(|| "?".to_owned()),
+        };
+        let address = info.func.to_pointer().addr();
+        if !inner_lua || address == 0 {
+            return Err(refuse());
+        }
+        if address == self.pcall_function {
+            return Ok(("pcall".to_owned(), Callee::Native("pcall".to_owned())));
+        }
+        if address != self.xpcall_function {
+            return Err(refuse());
+        }
+        let Some((_, handler)) = self.debug.local(thread, level, 2)? else {
+            return Err(refuse());
+        };
+        let handler = self.value(&handler, &here.child("message handler".to_owned()))?;
+        Ok(("xpcall".to_owned(), Callee::Xpcall { handler }))
     }
 
     /// The yielding function at the top of the stack, by name.

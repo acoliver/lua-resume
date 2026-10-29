@@ -70,6 +70,9 @@ pub enum Callee {
     Native(String),
     /// The next inner frame.
     Lua(FunctionId),
+    /// `xpcall(f, handler, ...)`: the next inner frame runs inside it, with this message handler.
+    /// A frame waiting in `pcall` is `Native("pcall")` followed by the inner frame.
+    Xpcall { handler: Value },
 }
 
 /// A local of a frame that is the same variable as an upvalue cell: closures that use the
