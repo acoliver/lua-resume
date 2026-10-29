@@ -39,7 +39,7 @@ use std::collections::HashMap;
 
 use mlua::{Lua, Thread};
 
-pub(crate) use origins::{Origin, register as register_origin};
+pub(crate) use origins::{Origin, register as register_origin, register_relocation};
 use path::Path;
 use values::Work;
 
@@ -112,6 +112,7 @@ struct Capturer<'a> {
     threads: HashMap<usize, usize>,
     shapes: HashMap<FunctionId, Shape>,
     origins: HashMap<usize, Origin>,
+    relocations: HashMap<FunctionId, Option<FunctionId>>,
     work: Vec<Work>,
 }
 
@@ -143,6 +144,7 @@ impl<'a> Capturer<'a> {
             threads: HashMap::new(),
             shapes: HashMap::new(),
             origins: origins::all(lua),
+            relocations: origins::relocations(lua),
             work: Vec::new(),
         })
     }

@@ -8,7 +8,7 @@ mod restore_support;
 mod scripts;
 
 use lua_resume::capture::{Permanents, Snapshot};
-use lua_resume::restore::{RestoreError, Sources, restore};
+use lua_resume::restore::{RestoreError, Sources, check_restore, restore};
 use restore_support::{Host, round_trip_all, run};
 use scripts::SCRIPTS;
 
@@ -96,4 +96,58 @@ fn a_function_that_moved_since_the_save_is_refused() {
         result,
         Err(RestoreError::UnknownFunction { .. } | RestoreError::SourceChanged { .. })
     ));
+}
+
+/// The closures script where `get` also uses `inc`, a local of `counter` that `get` did not
+/// capture when the snapshot was taken. Lua would compile that `inc` as a global.
+fn with_new_upvalue_use(source: &str) -> String {
+    let changed = source.replace(
+        "local function get() return n end",
+        "local function get() return inc and n end",
+    );
+    assert_ne!(changed, source);
+    changed
+}
+
+#[test]
+fn a_function_that_gained_an_enclosing_local_is_refused() {
+    let (snapshot, source) = saved();
+    let host = Host::new(&with_new_upvalue_use(source));
+    let Err(RestoreError::SourceChanged { reason, .. }) = host.restore(&snapshot) else {
+        panic!("expected SourceChanged");
+    };
+    assert!(reason.contains("[inc, n]"), "{reason}");
+    assert!(reason.contains("the save has [n]"), "{reason}");
+}
+
+#[test]
+fn check_restore_reports_a_function_that_gained_an_enclosing_local() {
+    let (snapshot, source) = saved();
+    let host = Host::new(&with_new_upvalue_use(source));
+    let found = check_restore(
+        &host.lua,
+        &host.debug,
+        &snapshot,
+        &host.sources(),
+        &host.permanents,
+    );
+    assert!(
+        found.iter().any(|refusal| matches!(
+            &refusal.error,
+            RestoreError::SourceChanged { reason, .. } if reason.contains("inc")
+        )),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_global_with_the_name_of_no_enclosing_local_is_not_an_upvalue() {
+    let (snapshot, source) = saved();
+    let changed = source.replace(
+        "local function get() return n end",
+        "local function get() return print and n end",
+    );
+    let host = Host::new(&changed);
+    let result = host.restore(&snapshot);
+    assert!(result.is_ok(), "{result:?}");
 }

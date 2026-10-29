@@ -8,7 +8,7 @@ use super::{Helpers, RestoreError, Sources};
 use crate::capture::{
     ClosureData, Debug, FunctionId, Metatable, Permanents, Snapshot, ThreadData, UpvalueRef, Value,
 };
-use crate::continuation::{ContinuationError, function_source_hooked};
+use crate::continuation::{ContinuationError, function_source_hooked, needed_upvalues};
 
 /// The name Lua gives the global environment upvalue. Its cell is joined like any other, so
 /// it is never declared as a local of a generated function.
@@ -78,6 +78,30 @@ fn same_upvalue_names(target: &[String], saved: &[&str]) -> bool {
     have.sort_unstable();
     want.sort_unstable();
     have == want
+}
+
+/// Refuses a function that uses an enclosing local the save has no upvalue for, which the
+/// rebuilt function would read as a global.
+fn check_needed(data: &ClosureData, needed: &[String]) -> Result<(), RestoreError> {
+    let saved: Vec<&str> = data.upvalues.iter().map(|up| up.name.as_str()).collect();
+    let lacking: Vec<&str> = needed
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !saved.contains(name))
+        .collect();
+    if lacking.is_empty() {
+        return Ok(());
+    }
+    let id = &data.function;
+    Err(RestoreError::SourceChanged {
+        function: format!("{}:{}-{}", id.chunk, id.line, id.end_line),
+        reason: format!(
+            "its upvalues are [{}], the save has [{}]; it uses the enclosing locals [{}] that the save lacks",
+            needed.join(", "),
+            saved.join(", "),
+            lacking.join(", ")
+        ),
+    })
 }
 
 /// The saved upvalue each upvalue of the rebuilt function takes its cell from: the saved one
@@ -273,6 +297,9 @@ impl<'a> Restorer<'a> {
             .into_function()?
             .call(())?;
         self.check_closure(&function, data)?;
+        let needed =
+            needed_upvalues(tree, id.key()).map_err(|source| function_error(id, source))?;
+        check_needed(data, &needed)?;
         self.join(&function, &data.upvalues)?;
         Ok(function)
     }

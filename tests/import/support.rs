@@ -6,11 +6,16 @@ mod hook_support;
 #[path = "../support/mod.rs"]
 mod normalizer;
 
-use lua_resume::capture::{Cell, Debug, Permanents, Value};
-use lua_resume::import::{SavedClosure, SavedFrame, SavedHeap, SavedThread, status};
+use lua_resume::capture::{Cell, Debug, Permanents, Snapshot, TableData, Value};
+use lua_resume::import::{
+    ImportChunk, ImportSources, PermanentMap, SavedClosure, SavedFrame, SavedHeap, SavedThread,
+    import_thread, status,
+};
 use lua_resume::lua53::chunk::read_chunk;
 use lua_resume::lua53::op::{CallKind, call_kind, register_a};
+use lua_resume::strip::strip_debug_calls;
 use lua_resume::syntax::ast::Block;
+use lua_resume::syntax::parse;
 use lua_resume::syntax::{OperatorHooks, print_with};
 use lua_resume_debug::new_lua_with_private_debug;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread};
@@ -276,4 +281,40 @@ pub fn int(value: i64) -> Value {
 
 pub fn string(value: &str) -> Value {
     Value::String(value.as_bytes().to_vec())
+}
+
+/// A host with the `cases.lua` source loaded.
+pub fn host() -> Host {
+    Host::new(SOURCE)
+}
+
+/// The import sources for `cases.lua`: the saved 5.3 chunk and the normalized 5.4 tree.
+pub fn sources(host: &Host) -> ImportSources {
+    let mut stripped = parse(SOURCE.as_bytes()).unwrap();
+    strip_debug_calls(&mut stripped);
+    let mut sources = ImportSources::new();
+    let chunk = ImportChunk::new(CHUNK, &stripped, host.tree.clone()).unwrap();
+    sources.insert(SAVED_SOURCE, chunk);
+    sources
+}
+
+/// The snapshot `world` imports to, in a fresh host.
+pub fn imported(world: &World) -> Snapshot {
+    import_thread(
+        &world.thread,
+        &world.heap,
+        &sources(&host()),
+        &host().permanents,
+        &PermanentMap::default(),
+    )
+    .unwrap()
+    .snapshot
+}
+
+/// A table holding `values` at 1, 2, 3 and so on.
+pub fn list(values: &[i64]) -> TableData {
+    TableData {
+        entries: (1..).zip(values).map(|(i, v)| (int(i), int(*v))).collect(),
+        metatable: None,
+    }
 }
