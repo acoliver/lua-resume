@@ -100,3 +100,74 @@ fn trailing_bytes_are_refused() {
     bytes.push(0);
     assert!(read_chunk(&bytes).unwrap_err().message.contains("after"));
 }
+
+/// A string as `luac` writes it: one byte of length plus one, or `0xff` and a `size_t` of
+/// `size_width` bytes for strings of 254 bytes or more.
+fn dump_string(out: &mut Vec<u8>, text: &[u8], size_width: usize) {
+    if text.len() + 1 < 0xff {
+        out.push(u8::try_from(text.len() + 1).unwrap());
+    } else {
+        out.push(0xff);
+        let size = u64::try_from(text.len() + 1).unwrap();
+        out.extend_from_slice(&size.to_le_bytes()[..size_width]);
+    }
+    out.extend_from_slice(text);
+}
+
+/// A chunk whose main function holds one string constant, one local and no code, written with
+/// the given size bytes and `size_t` width.
+fn synthetic_chunk(sizes: &[u8], size_width: usize, constant: &[u8]) -> Vec<u8> {
+    let mut out = b"\x1bLua\x53\x00\x19\x93\r\n\x1a\n".to_vec();
+    out.extend_from_slice(sizes);
+    out.extend_from_slice(&0x5678u64.to_le_bytes());
+    out.extend_from_slice(&370.5f64.to_bits().to_le_bytes());
+    out.push(0); // upvalue count of the main function
+    dump_string(&mut out, b"@long.lua", size_width);
+    out.extend_from_slice(&[0; 8]); // line_defined, last_line_defined
+    out.extend_from_slice(&[0, 1, 2]); // params, vararg, max stack
+    out.extend_from_slice(&0u32.to_le_bytes()); // code
+    out.extend_from_slice(&1u32.to_le_bytes()); // constants
+    out.push(4);
+    dump_string(&mut out, constant, size_width);
+    out.extend_from_slice(&0u32.to_le_bytes()); // upvalues
+    out.extend_from_slice(&0u32.to_le_bytes()); // children
+    out.extend_from_slice(&0u32.to_le_bytes()); // line info
+    out.extend_from_slice(&1u32.to_le_bytes()); // locals
+    dump_string(&mut out, constant, size_width);
+    out.extend_from_slice(&[0; 8]); // start_pc, end_pc
+    out.extend_from_slice(&0u32.to_le_bytes()); // upvalue names
+    out
+}
+
+fn long_text() -> Vec<u8> {
+    (0..300u16)
+        .map(|i| b'a' + u8::try_from(i % 26).unwrap())
+        .collect()
+}
+
+#[test]
+fn map_data_long_strings_use_a_four_byte_length() {
+    let text = long_text();
+    let bytes = synthetic_chunk(&[4, 4, 8], 4, &text);
+    let chunk = read_chunk(&bytes).unwrap();
+    assert_eq!(chunk.header, Header::MapData);
+    assert_eq!(chunk.main.0.source, b"@long.lua");
+    assert_eq!(chunk.main.0.constants, [Constant::Str(text.clone())]);
+    assert_eq!(chunk.main.0.locals[0].name, text);
+}
+
+#[test]
+fn standard_long_strings_keep_an_eight_byte_length() {
+    let text = long_text();
+    let bytes = synthetic_chunk(&[4, 8, 4, 8, 8], 8, &text);
+    let chunk = read_chunk(&bytes).unwrap();
+    assert_eq!(chunk.header, Header::Standard);
+    assert_eq!(chunk.main.0.constants, [Constant::Str(text.clone())]);
+    assert_eq!(chunk.main.0.locals[0].name, text);
+}
+
+#[test]
+fn map_data_header_rejects_an_eight_byte_length() {
+    let bytes = synthetic_chunk(&[4, 4, 8], 8, &long_text());
+    assert!(read_chunk(&bytes).is_err());
+}

@@ -52,7 +52,8 @@ pub fn read_chunk(bytes: &[u8]) -> Result<Chunk, ReadError> {
     let mut cur = Cursor::new(bytes, 0);
     let header = read_header(&mut cur)?;
     cur.u8()?;
-    let main = read_function(&mut cur, &[], 0)?;
+    let strings = StringSize::for_header(header);
+    let main = read_function(&mut cur, strings, &[], 0)?;
     if cur.remaining() != 0 {
         return Err(cur.error("unexpected bytes after the main function"));
     }
@@ -92,8 +93,23 @@ fn read_header(cur: &mut Cursor<'_>) -> Result<Header, ReadError> {
     Ok(header)
 }
 
-fn read_string(cur: &mut Cursor<'_>) -> Result<Option<Vec<u8>>, ReadError> {
+/// Width of the `size_t` that prefixes a string of 255 bytes or more. The standard header
+/// declares 8 bytes; the `MapData` header declares 4.
+#[derive(Clone, Copy)]
+struct StringSize(usize);
+
+impl StringSize {
+    fn for_header(header: Header) -> Self {
+        match header {
+            Header::Standard => Self(8),
+            Header::MapData => Self(4),
+        }
+    }
+}
+
+fn read_string(cur: &mut Cursor<'_>, strings: StringSize) -> Result<Option<Vec<u8>>, ReadError> {
     let size = match cur.u8()? {
+        0xff if strings.0 == 4 => u64::from(cur.u32()?),
         0xff => cur.u64()?,
         size => u64::from(size),
     };
@@ -109,11 +125,16 @@ fn read_count(cur: &mut Cursor<'_>, min_size: usize) -> Result<usize, ReadError>
     cur.bounded(u64::from(value), min_size)
 }
 
-fn read_function(cur: &mut Cursor<'_>, parent: &[u8], depth: usize) -> Result<Function, ReadError> {
+fn read_function(
+    cur: &mut Cursor<'_>,
+    strings: StringSize,
+    parent: &[u8],
+    depth: usize,
+) -> Result<Function, ReadError> {
     if depth > MAX_DEPTH {
         return Err(cur.error("functions nest too deeply"));
     }
-    let source = read_string(cur)?.unwrap_or_else(|| parent.to_vec());
+    let source = read_string(cur, strings)?.unwrap_or_else(|| parent.to_vec());
     let line_defined = cur.u32()?;
     let last_line_defined = cur.u32()?;
     let num_params = cur.u8()?;
@@ -122,17 +143,17 @@ fn read_function(cur: &mut Cursor<'_>, parent: &[u8], depth: usize) -> Result<Fu
     let code = (0..read_count(cur, 4)?)
         .map(|_| cur.u32())
         .collect::<Result<_, _>>()?;
-    let constants = read_constants(cur)?;
+    let constants = read_constants(cur, strings)?;
     let mut upvalues = read_upvalues(cur)?;
     let mut children = Vec::new();
     for _ in 0..read_count(cur, 4)? {
-        children.push(read_function(cur, &source, depth + 1)?);
+        children.push(read_function(cur, strings, &source, depth + 1)?);
     }
     let line_info = (0..read_count(cur, 4)?)
         .map(|_| cur.u32())
         .collect::<Result<_, _>>()?;
-    let locals = read_locals(cur)?;
-    read_upvalue_names(cur, &mut upvalues)?;
+    let locals = read_locals(cur, strings)?;
+    read_upvalue_names(cur, strings, &mut upvalues)?;
     Ok(Function(Proto {
         source,
         line_defined,
@@ -149,7 +170,7 @@ fn read_function(cur: &mut Cursor<'_>, parent: &[u8], depth: usize) -> Result<Fu
     }))
 }
 
-fn read_constants(cur: &mut Cursor<'_>) -> Result<Vec<Constant>, ReadError> {
+fn read_constants(cur: &mut Cursor<'_>, strings: StringSize) -> Result<Vec<Constant>, ReadError> {
     let mut out = Vec::new();
     for _ in 0..read_count(cur, 1)? {
         out.push(match cur.u8()? {
@@ -158,7 +179,7 @@ fn read_constants(cur: &mut Cursor<'_>) -> Result<Vec<Constant>, ReadError> {
             3 => Constant::Float(f64::from_bits(cur.u64()?)),
             0x13 => Constant::Int(cur.u64()?.cast_signed()),
             4 | 0x14 => Constant::Str(
-                read_string(cur)?.ok_or_else(|| cur.error("missing constant string"))?,
+                read_string(cur, strings)?.ok_or_else(|| cur.error("missing constant string"))?,
             ),
             _ => return Err(cur.error("unknown constant type")),
         });
@@ -180,10 +201,10 @@ fn read_upvalues(cur: &mut Cursor<'_>) -> Result<Vec<Upvalue>, ReadError> {
     Ok(out)
 }
 
-fn read_locals(cur: &mut Cursor<'_>) -> Result<Vec<LocalVar>, ReadError> {
+fn read_locals(cur: &mut Cursor<'_>, strings: StringSize) -> Result<Vec<LocalVar>, ReadError> {
     let mut out = Vec::new();
     for _ in 0..read_count(cur, 9)? {
-        let name = read_string(cur)?.unwrap_or_default();
+        let name = read_string(cur, strings)?.unwrap_or_default();
         out.push(LocalVar {
             name,
             start_pc: cur.u32()?,
@@ -193,13 +214,17 @@ fn read_locals(cur: &mut Cursor<'_>) -> Result<Vec<LocalVar>, ReadError> {
     Ok(out)
 }
 
-fn read_upvalue_names(cur: &mut Cursor<'_>, upvalues: &mut [Upvalue]) -> Result<(), ReadError> {
+fn read_upvalue_names(
+    cur: &mut Cursor<'_>,
+    strings: StringSize,
+    upvalues: &mut [Upvalue],
+) -> Result<(), ReadError> {
     let count = read_count(cur, 1)?;
     if count != 0 && count != upvalues.len() {
         return Err(cur.error("upvalue name count differs from the upvalue count"));
     }
     for upvalue in upvalues.iter_mut().take(count) {
-        upvalue.name = read_string(cur)?.unwrap_or_default();
+        upvalue.name = read_string(cur, strings)?.unwrap_or_default();
     }
     Ok(())
 }
