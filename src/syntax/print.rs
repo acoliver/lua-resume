@@ -12,21 +12,29 @@ use super::ast::{
     Attrib, BinOp, Block, Call, Expr, Field, FuncBody, LocalName, Stat, StatKind, UNARY_PRIORITY,
     UnOp,
 };
+use super::hooks::OperatorHooks;
 
 /// Prints a chunk.
 pub fn print(chunk: &Block) -> String {
+    print_with(chunk, &OperatorHooks::none())
+}
+
+/// Prints a chunk with the operators `hooks` names written as calls of host functions.
+pub fn print_with(chunk: &Block, hooks: &OperatorHooks) -> String {
     let mut printer = Printer {
         out: String::new(),
         line: 1,
+        hooks,
     };
     printer.block(chunk);
     printer.out.push('\n');
     printer.out
 }
 
-struct Printer {
+struct Printer<'a> {
     out: String,
     line: u32,
+    hooks: &'a OperatorHooks,
 }
 
 /// Whether an expression can be printed as a prefix (callee, indexed object) without parentheses.
@@ -56,7 +64,7 @@ fn stat_leads_with_paren(stat: &Stat) -> bool {
     }
 }
 
-impl Printer {
+impl Printer<'_> {
     fn text(&mut self, text: &str) {
         self.out.push_str(text);
     }
@@ -304,6 +312,10 @@ impl Printer {
     }
 
     fn binary(&mut self, op: BinOp, left: &Expr, right: &Expr) {
+        if let (BinOp::Div, Some(hook)) = (op, self.hooks.divide()) {
+            let hook = hook.to_owned();
+            return self.hooked(&hook, left, right);
+        }
         let (left_priority, right_priority) = op.priority();
         let left_parens = match left {
             Expr::Binary(inner, ..) => left_priority > inner.priority().1,
@@ -317,6 +329,16 @@ impl Printer {
         self.operand(left, left_parens);
         self.text(&format!(" {} ", op.text()));
         self.operand(right, right_parens);
+    }
+
+    /// `(hook(left, right))`: arguments are evaluated left to right as the operands were, and
+    /// the parentheses keep the call from being a tail call or yielding several values.
+    fn hooked(&mut self, hook: &str, left: &Expr, right: &Expr) {
+        self.text(&format!("({hook}("));
+        self.expr(left);
+        self.text(", ");
+        self.expr(right);
+        self.text("))");
     }
 
     fn unary(&mut self, op: UnOp, operand: &Expr) {

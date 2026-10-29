@@ -8,7 +8,7 @@ use super::{Helpers, RestoreError, Sources};
 use crate::capture::{
     ClosureData, Debug, FunctionId, Metatable, Permanents, Snapshot, ThreadData, UpvalueRef, Value,
 };
-use crate::continuation::{ContinuationError, function_source};
+use crate::continuation::{ContinuationError, function_source_hooked};
 
 /// The name Lua gives the global environment upvalue. Its cell is joined like any other, so
 /// it is never declared as a local of a generated function.
@@ -263,8 +263,9 @@ impl<'a> Restorer<'a> {
             .sources
             .get(&id.chunk)
             .ok_or_else(|| RestoreError::UnknownChunk(id.chunk.clone()))?;
-        let source = function_source(tree, id.key(), &upvalue_names(data))
-            .map_err(|source| function_error(id, source))?;
+        let source =
+            function_source_hooked(tree, id.key(), &upvalue_names(data), self.sources.hooks())
+                .map_err(|source| function_error(id, source))?;
         let function: Function = self
             .lua
             .load(source)

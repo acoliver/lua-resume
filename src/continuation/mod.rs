@@ -26,7 +26,7 @@ mod resume;
 mod site;
 
 use crate::syntax::ast::{Block, Expr, Stat, StatKind};
-use crate::syntax::{parse, print};
+use crate::syntax::{OperatorHooks, parse, print_with};
 use path::{find_function, find_site, scope_at};
 pub use site::Pending;
 
@@ -90,6 +90,25 @@ pub fn continuation_source_with(
     upvalues: &[String],
     shared: &[String],
 ) -> Result<String, ContinuationError> {
+    continuation_source_hooked(
+        chunk,
+        function,
+        (site, pending),
+        (locals, upvalues, shared),
+        &OperatorHooks::none(),
+    )
+}
+
+/// [`continuation_source_with`] for a chunk loaded with `hooks`, which prints the operators
+/// they name as the host functions the original frame called. `names` are the saved locals,
+/// the upvalues and the locals closures share.
+pub fn continuation_source_hooked(
+    chunk: &Block,
+    function: FunctionKey,
+    (site, pending): (u32, Pending),
+    (locals, upvalues, shared): (&[String], &[String], &[String]),
+    hooks: &OperatorHooks,
+) -> Result<String, ContinuationError> {
     let body = find_function(chunk, function)?;
     let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
     let mut stats = Vec::new();
@@ -123,7 +142,7 @@ pub fn continuation_source_with(
     };
     Ok(format!(
         "{declared}return function(__lr_v, __lr_next, __lr_unpack, ...) {} end",
-        print(&block)
+        print_with(&block, hooks)
     ))
 }
 
@@ -153,6 +172,16 @@ pub fn function_source(
     function: FunctionKey,
     upvalues: &[String],
 ) -> Result<String, ContinuationError> {
+    function_source_hooked(chunk, function, upvalues, &OperatorHooks::none())
+}
+
+/// [`function_source`] for a chunk loaded with `hooks`.
+pub fn function_source_hooked(
+    chunk: &Block,
+    function: FunctionKey,
+    upvalues: &[String],
+    hooks: &OperatorHooks,
+) -> Result<String, ContinuationError> {
     let body = find_function(chunk, function)?;
     let mut stats = Vec::new();
     if !upvalues.is_empty() {
@@ -168,7 +197,7 @@ pub fn function_source(
     let ret = parse(b"return __lr_f")
         .expect("generated snippet parses")
         .ret;
-    Ok(print(&Block { stats, ret }))
+    Ok(print_with(&Block { stats, ret }, hooks))
 }
 
 /// The locals in scope at a call site of a normalized function.

@@ -1,6 +1,8 @@
 //! Builds the stack and `CallInfo` records Lua 5.3 holds when a coroutine is stopped in a
 //! yielding native function, from the compiled `cases.luac`.
 
+#[path = "../hook_support/mod.rs"]
+mod hook_support;
 #[path = "../support/mod.rs"]
 mod normalizer;
 
@@ -9,7 +11,7 @@ use lua_resume::import::{SavedClosure, SavedFrame, SavedHeap, SavedThread, statu
 use lua_resume::lua53::chunk::read_chunk;
 use lua_resume::lua53::op::{CallKind, call_kind, register_a};
 use lua_resume::syntax::ast::Block;
-use lua_resume::syntax::print;
+use lua_resume::syntax::{OperatorHooks, print_with};
 use lua_resume_debug::new_lua_with_private_debug;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread};
 
@@ -22,10 +24,20 @@ pub struct Host {
     pub debug: Debug,
     pub permanents: Permanents,
     pub tree: Block,
+    pub hooks: OperatorHooks,
 }
 
 impl Host {
     pub fn new(source: &str) -> Self {
+        Self::with_hooks(source, OperatorHooks::none())
+    }
+
+    /// A host that loads the source with `/` printed as the division hook.
+    pub fn hooked(source: &str) -> Self {
+        Self::with_hooks(source, hook_support::division_hooks())
+    }
+
+    fn with_hooks(source: &str, hooks: OperatorHooks) -> Self {
         let (lua, table) =
             new_lua_with_private_debug(StdLib::ALL_SAFE, LuaOptions::default()).unwrap();
         let debug = Debug::new(&table).unwrap();
@@ -35,12 +47,17 @@ impl Host {
         permanents.insert("ipairs iterator", aux).unwrap();
         lua.load(HELPERS).exec().unwrap();
         let tree = normalizer::normalize_source(source.as_bytes()).unwrap();
-        lua.load(print(&tree)).set_name(CHUNK).exec().unwrap();
+        hook_support::install(&lua, &hooks);
+        lua.load(print_with(&tree, &hooks))
+            .set_name(CHUNK)
+            .exec()
+            .unwrap();
         Self {
             lua,
             debug,
             permanents,
             tree,
+            hooks,
         }
     }
 
