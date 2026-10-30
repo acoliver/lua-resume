@@ -3,9 +3,12 @@
 //! Every function expression and statement is a candidate wherever it sits: as a call
 //! argument, a table field, a return value, a method definition or a nested function. Lua's
 //! debug library reports a function's first and last line, so those two lines are its
-//! identity, and two functions that share both lines are refused as ambiguous.
+//! identity. Functions that share both lines are told apart by their shape (parameters, vararg
+//! flag and upvalue count) when the caller has it, and refused as ambiguous when the shape
+//! does not single one out.
 
-use super::FunctionKey;
+use super::needs::shape_of;
+use super::{FunctionRef, FunctionShape};
 use crate::syntax::ast::{Block, Call, Expr, Field, FuncBody, Stat, StatKind};
 
 /// What searching for a function found.
@@ -15,15 +18,29 @@ pub(super) enum Found<'a> {
     Several(usize),
 }
 
-pub(super) fn locate(block: &Block, key: FunctionKey) -> Found<'_> {
+pub(super) fn locate(block: &Block, function: FunctionRef) -> Found<'_> {
+    let key = function.key;
     let mut all = Vec::new();
     in_block(block, &mut all);
     all.retain(|body| body.line == key.line && body.end_line == key.end_line);
+    if let (Some(shape), true) = (function.shape, all.len() > 1) {
+        all = narrow(block, all, shape);
+    }
     match all.as_slice() {
         [] => Found::None,
         [one] => Found::One(one),
         many => Found::Several(many.len()),
     }
+}
+
+/// The candidates with `shape`, or all of them when none has it.
+fn narrow<'a>(block: &Block, all: Vec<&'a FuncBody>, shape: FunctionShape) -> Vec<&'a FuncBody> {
+    let same: Vec<&FuncBody> = all
+        .iter()
+        .copied()
+        .filter(|body| shape_of(block, body) == shape)
+        .collect();
+    if same.is_empty() { all } else { same }
 }
 
 /// Every function in the block, outer before nested, in tree order.

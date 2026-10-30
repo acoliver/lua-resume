@@ -58,6 +58,29 @@ pub struct FunctionKey {
     pub end_line: u32,
 }
 
+/// What tells apart functions that start and end on the same lines: the parameter count
+/// (`self` of a method included), the vararg flag and the upvalue count (`_ENV` included),
+/// as `debug.getinfo` reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct FunctionShape {
+    pub params: u32,
+    pub vararg: bool,
+    pub upvalues: u32,
+}
+
+/// A function by its lines and, when several functions share them, by its shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionRef {
+    pub key: FunctionKey,
+    pub shape: Option<FunctionShape>,
+}
+
+impl From<FunctionKey> for FunctionRef {
+    fn from(key: FunctionKey) -> Self {
+        Self { key, shape: None }
+    }
+}
+
 /// Generates the chunk source of the continuation of `function` at call site `site`, for a
 /// frame suspended in the outermost call of the site statement, which is what capture and
 /// import produce. `locals` are the names of the saved locals and `upvalues` those of the
@@ -148,12 +171,12 @@ pub struct Continuation {
 /// [`continuation_source_hooked`] that also reports the functions that moved.
 pub fn continuation_hooked(
     chunk: &Block,
-    function: FunctionKey,
+    function: impl Into<FunctionRef>,
     (site, pending): (u32, Pending),
     (locals, upvalues, shared): (&[String], &[String], &[String]),
     hooks: &OperatorHooks,
 ) -> Result<Continuation, ContinuationError> {
-    let body = find_function(chunk, function)?;
+    let body = find_function(chunk, function.into())?;
     let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
     let mut stats = Vec::new();
     if !locals.is_empty() {
@@ -255,11 +278,11 @@ pub fn function_source(
 /// [`function_source`] for a chunk loaded with `hooks`.
 pub fn function_source_hooked(
     chunk: &Block,
-    function: FunctionKey,
+    function: impl Into<FunctionRef>,
     upvalues: &[String],
     hooks: &OperatorHooks,
 ) -> Result<String, ContinuationError> {
-    let body = find_function(chunk, function)?;
+    let body = find_function(chunk, function.into())?;
     let mut stats = Vec::new();
     if !upvalues.is_empty() {
         stats.extend(snippet(&format!("local {}", upvalues.join(", "))));
@@ -279,7 +302,7 @@ pub fn function_source_hooked(
 
 /// Whether `chunk` defines at least one function that spans the lines of `function`.
 pub fn defines_function(chunk: &Block, function: FunctionKey) -> bool {
-    !matches!(find::locate(chunk, function), find::Found::None)
+    !matches!(find::locate(chunk, function.into()), find::Found::None)
 }
 
 /// The locals in scope at a call site of a normalized function.
@@ -297,7 +320,7 @@ pub fn site_scope(
     function: FunctionKey,
     site: u32,
 ) -> Result<SiteScope, ContinuationError> {
-    let body = find_function(chunk, function)?;
+    let body = find_function(chunk, function.into())?;
     let steps = find_site(&body.body, site).ok_or(ContinuationError::NoSite(site))?;
     let scope = scope_at(body, &steps);
     Ok(SiteScope {

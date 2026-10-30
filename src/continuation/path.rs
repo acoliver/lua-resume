@@ -1,7 +1,7 @@
 //! Finding a function and one of its call sites in a normalized tree.
 
 use super::find::{Found, locate};
-use super::{ContinuationError, FunctionKey};
+use super::{ContinuationError, FunctionRef};
 use crate::syntax::ast::{Block, Expr, FuncBody, Stat, StatKind};
 
 /// A step from a block into the statement at `index`; `branch` selects an `if` arm. An
@@ -14,9 +14,10 @@ pub(super) struct Step {
 
 pub(super) fn find_function(
     block: &Block,
-    key: FunctionKey,
+    function: FunctionRef,
 ) -> Result<&FuncBody, ContinuationError> {
-    match locate(block, key) {
+    let key = function.key;
+    match locate(block, function) {
         Found::One(body) => Ok(body),
         Found::None => Err(ContinuationError::NoFunction(key.line, key.end_line)),
         Found::Several(count) => Err(ContinuationError::Ambiguous {

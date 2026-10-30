@@ -84,7 +84,7 @@ The host function must return exactly one value and must not yield. A coroutine 
 
 ## Continuations
 
-`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing blocks and continues after the call of `site`. The pending call is replaced by `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, wherever they are written: call arguments, table fields, returned values, method definitions and nested functions. Two functions that share both their first and last line are refused as ambiguous.
+`continuation_source(chunk, function, site, locals, upvalues)` returns a chunk that evaluates to `function(__lr_v, __lr_next, __lr_unpack, ...)`. It declares `locals` from the table `__lr_v`, re-enters the enclosing blocks and continues after the call of `site`. The pending call is replaced by `__lr_next()`: the next inner frame, or `coroutine.yield` for the innermost frame. Functions are found by the lines their definition spans, wherever they are written: call arguments, table fields, returned values, method definitions and nested functions. Functions that share both their first and last line are told apart by their shape (`FunctionRef`: parameter count, vararg flag and upvalue count, as capture records it in `FunctionId::shape`) and refused as ambiguous when the shape does not single one out.
 
 Supported:
 
@@ -127,8 +127,8 @@ Capture refuses, with an error that names the path to the value (for example ``t
 
 Limits of this step:
 
-- Two different functions with the same chunk name and lines are told apart only by parameter count, vararg flag, upvalue count and the set of lines with code. Functions that match on all of these are not detected.
-- Dead `(temporary)` slots that a vararg callee leaves in its caller's stack are recognized by count and skipped. Any other temporary is refused.
+- Two different functions with the same chunk name and lines are told apart only by parameter count, vararg flag, upvalue count and the set of lines with code. Functions that match on all of these are not detected. Each function's identity records the shape, so restore can pick among functions that start and end on the same line. One capture that reaches two such functions with different shapes is still refused, because it cannot tell them from two chunks loaded under one name.
+- Dead `(temporary)` slots that a vararg callee leaves in its caller's stack are recognized by count and skipped. Any other temporary is refused. Normalization does not remove them all: a call that is the last argument of another call (`f(a, g())`, which passes all of `g`'s results) and a call inside a table constructor (`{g(), 1}`) keep the outer callee, the earlier arguments or the new table on the stack below the pending call, so a coroutine waiting in `g` is refused with an unnamed `(temporary)`. Every other call is staged into its own statement and leaves nothing below it (`tests/normalized_temporaries.rs`).
 - A to-be-closed local that holds nil, false or userdata is not detected.
 
 ## Importing a whole save
@@ -179,8 +179,8 @@ The restore registers each continuation in the Lua state as the frame it continu
 
 Limits of this step:
 
-- Two functions that start and end on the same lines cannot be told apart and are refused. The debug library reports no more than those two lines.
-- The check compares lines and the upvalue names and count the save recorded. Two functions that start and end on the same lines are refused, so it does not need to tell them apart.
+- Two functions that start and end on the same lines are told apart by the shape in the saved identity. Functions with the same lines and the same parameters, vararg flag and upvalue count are refused, and so is a save from before shapes were recorded.
+- The check compares lines and the upvalue names and count the save recorded.
 - A call with a nested last-argument call, such as `f(a, g())`, has one site, and the continuation takes `g` as the pending call. A coroutine waiting in `f` is continued wrongly.
 - A continuation reports positions in error messages by the lines of its generated source. Re-entered loops can print their body on a later line than the original. Tests raise errors with level 0.
 - A loop re-entered in the middle of an iteration is generated twice, and the copy that runs later iterations sits on later lines than the original. A closure that copy creates is saved under the lines of the function it stands for: the restore tells `capture` where each such function moved. If the new lines belong to a function of the source, the restore of that frame is refused.

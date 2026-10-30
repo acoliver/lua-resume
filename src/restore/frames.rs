@@ -157,7 +157,7 @@ impl Restorer<'_> {
         let shared = shared_names(frame)?;
         let made = continuation_hooked(
             tree,
-            id.key(),
+            id.function_ref(),
             (frame.site, Pending::Outermost),
             (&locals, &upvalue_names(data), &shared),
             self.sources.hooks(),
@@ -190,6 +190,7 @@ impl Restorer<'_> {
             chunk: id.chunk.clone(),
             line: key.line,
             end_line: key.end_line,
+            shape: None,
         };
         for moved in &made.moved {
             if defines_function(tree, moved.generated) {
