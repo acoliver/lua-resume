@@ -262,6 +262,7 @@ impl Importer<'_> {
                     chunk: chunk.name.clone(),
                     line: proto.line_defined,
                     end_line: proto.last_line_defined,
+                    shape: None,
                 },
                 upvalues,
             });

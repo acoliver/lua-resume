@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::continuation::FunctionKey;
+use crate::continuation::{FunctionKey, FunctionRef, FunctionShape};
 
 /// The function a frame or closure runs: its chunk name and the lines its definition spans.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -15,9 +15,21 @@ pub struct FunctionId {
     pub chunk: String,
     pub line: u32,
     pub end_line: u32,
+    /// Tells this function from others on the same lines. Capture records it; saves from
+    /// before it existed and imports of Lua 5.3 saves leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<FunctionShape>,
 }
 
 impl FunctionId {
+    /// The reference restore finds the function by: its lines and, when saved, its shape.
+    pub fn function_ref(&self) -> FunctionRef {
+        FunctionRef {
+            key: self.key(),
+            shape: self.shape,
+        }
+    }
+
     /// The key `continuation::continuation_source` finds the function by.
     pub fn key(&self) -> FunctionKey {
         FunctionKey {

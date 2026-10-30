@@ -10,6 +10,7 @@ use super::path::Path;
 use super::{
     Callee, CaptureError, Capturer, Frame, FunctionId, Local, Origin, Shape, ThreadData, Value,
 };
+use crate::continuation::FunctionShape;
 
 const SITE: &str = crate::rewrite::SITE;
 const CONTINUATION_PARAMS: usize = 3;
@@ -288,12 +289,27 @@ impl Capturer<'_> {
         }
     }
 
-    /// The identity of a Lua function, checking that no different function shares it.
+    /// The identity of a Lua function, checking that no different function shares it. The
+    /// identity carries the function's shape, which restore uses to find it among functions
+    /// that share its lines.
     pub(super) fn identify(
         &mut self,
         info: &Info,
         path: &Path,
     ) -> Result<FunctionId, CaptureError> {
+        let id = self.identify_lines(info, path)?;
+        let count = |value: i64| u32::try_from(value).unwrap_or(u32::MAX);
+        Ok(FunctionId {
+            shape: Some(FunctionShape {
+                params: count(info.params),
+                vararg: info.vararg,
+                upvalues: count(info.upvalues),
+            }),
+            ..id
+        })
+    }
+
+    fn identify_lines(&mut self, info: &Info, path: &Path) -> Result<FunctionId, CaptureError> {
         let unidentifiable = || CaptureError::Unidentifiable {
             path: path.render(),
         };
@@ -306,6 +322,7 @@ impl Capturer<'_> {
             chunk: info.source.clone(),
             line,
             end_line,
+            shape: None,
         };
         let shape = Shape {
             params: info.params,

@@ -6,7 +6,7 @@
 //! the way Lua 5.4 scopes it and reports the ones that reach out of the function.
 
 use super::path::find_function;
-use super::{ContinuationError, FunctionKey};
+use super::{ContinuationError, FunctionRef, FunctionShape};
 use crate::syntax::ast::{Block, Call, Expr, Field, FuncBody, Stat, StatKind};
 
 const ENV: &str = "_ENV";
@@ -15,17 +15,35 @@ const ENV: &str = "_ENV";
 /// nested function, in order of first use. `_ENV` is not listed.
 pub fn needed_upvalues(
     chunk: &Block,
-    function: FunctionKey,
+    function: impl Into<FunctionRef>,
 ) -> Result<Vec<String>, ContinuationError> {
-    let target = find_function(chunk, function)?;
+    let target = find_function(chunk, function.into())?;
+    Ok(walk_target(chunk, target).found)
+}
+
+fn walk_target<'a>(chunk: &Block, target: &'a FuncBody) -> Walk<'a> {
     let mut walk = Walk {
         target,
         scope: Vec::new(),
         boundary: None,
         found: Vec::new(),
+        env: false,
     };
     walk.block(chunk, None);
-    Ok(walk.found)
+    walk
+}
+
+/// The shape `debug.getinfo` reports for `target` once compiled: its parameters, its vararg
+/// flag and its upvalues, which are the enclosing locals it uses and `_ENV` when it or a
+/// nested function reads a global.
+pub(super) fn shape_of(chunk: &Block, target: &FuncBody) -> FunctionShape {
+    let walk = walk_target(chunk, target);
+    let count = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+    FunctionShape {
+        params: count(target.params.len()),
+        vararg: target.vararg,
+        upvalues: count(walk.found.len() + usize::from(walk.env)),
+    }
 }
 
 struct Walk<'a> {
@@ -35,6 +53,8 @@ struct Walk<'a> {
     /// While inside the target: how many entries of `scope` belong to enclosing functions.
     boundary: Option<usize>,
     found: Vec<String>,
+    /// Whether the target reads `_ENV`, by a global name or by its own name.
+    env: bool,
 }
 
 impl Walk<'_> {
@@ -165,12 +185,14 @@ impl Walk<'_> {
         let Some(boundary) = self.boundary else {
             return;
         };
-        let resolved = self.scope.iter().rposition(|local| local == name);
-        if resolved.is_some_and(|index| index < boundary)
-            && name != ENV
-            && !self.found.iter().any(|seen| seen == name)
-        {
-            self.found.push(name.to_owned());
+        match self.scope.iter().rposition(|local| local == name) {
+            Some(index) if index < boundary && name != ENV => {
+                if !self.found.iter().any(|seen| seen == name) {
+                    self.found.push(name.to_owned());
+                }
+            }
+            Some(index) if index >= boundary => {}
+            _ => self.env = true,
         }
     }
 }

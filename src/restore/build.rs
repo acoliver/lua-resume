@@ -295,9 +295,13 @@ impl<'a> Restorer<'a> {
             .sources
             .get(&id.chunk)
             .ok_or_else(|| RestoreError::UnknownChunk(id.chunk.clone()))?;
-        let source =
-            function_source_hooked(tree, id.key(), &upvalue_names(data), self.sources.hooks())
-                .map_err(|source| function_error(id, source))?;
+        let source = function_source_hooked(
+            tree,
+            id.function_ref(),
+            &upvalue_names(data),
+            self.sources.hooks(),
+        )
+        .map_err(|source| function_error(id, source))?;
         let function: Function = self
             .lua
             .load(source)
@@ -305,8 +309,8 @@ impl<'a> Restorer<'a> {
             .into_function()?
             .call(())?;
         self.check_closure(&function, data)?;
-        let needed =
-            needed_upvalues(tree, id.key()).map_err(|source| function_error(id, source))?;
+        let needed = needed_upvalues(tree, id.function_ref())
+            .map_err(|source| function_error(id, source))?;
         check_needed(data, &needed)?;
         self.join(&function, &data.upvalues)?;
         Ok(function)
